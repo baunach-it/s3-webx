@@ -209,6 +209,7 @@ func build(file fileConfig) Config {
 			CRF:          33,
 			AudioBitrate: "96k",
 		},
+		KeepIfLarger: true,
 		CacheControl: CacheControlInherit,
 	}
 	defaults.apply(file.Defaults)

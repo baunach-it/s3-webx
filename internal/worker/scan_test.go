@@ -64,22 +64,31 @@ func TestDecide(t *testing.T) {
 		name    string
 		variant *store.Object
 		entry   *state.Entry
+		keep    bool
 		want    bool
 	}{
-		{"variant missing", nil, nil, true},
-		{"variant older than original", older, nil, true},
-		{"variant newer than original", newer, nil, false},
-		{"skipped for this version", nil, sameVersion(state.Skipped, 0), false},
-		{"skipped for an older version", nil, otherVersion(state.Skipped, 0), true},
-		{"failed below the limit", nil, sameVersion(state.Failed, 2), true},
-		{"failed at the limit", nil, sameVersion(state.Failed, 3), false},
-		{"failed at the limit for an older version", nil, otherVersion(state.Failed, 3), true},
-		{"done but variant deleted", nil, sameVersion(state.Done, 0), true},
-		{"skipped with same date but other size", nil, &state.Entry{Status: state.Skipped, SourceModified: t0, SourceSize: 1}, true},
+		{"variant missing", nil, nil, false, true},
+		{"variant older than original", older, nil, false, true},
+		{"variant newer than original", newer, nil, false, false},
+		{"skipped for this version", nil, sameVersion(state.Skipped, 0), false, false},
+		{"skipped for this version, keep if larger", nil, sameVersion(state.Skipped, 0), true, true},
+		{"skipped for an older version", nil, otherVersion(state.Skipped, 0), false, true},
+		{"failed below the limit", nil, sameVersion(state.Failed, 2), false, true},
+		{"failed at the limit", nil, sameVersion(state.Failed, 3), false, false},
+		{"failed at the limit, keep if larger", nil, sameVersion(state.Failed, 3), true, false},
+		{"failed at the limit for an older version", nil, otherVersion(state.Failed, 3), false, true},
+		{"done but variant deleted", nil, sameVersion(state.Done, 0), false, true},
+		{"done and variant newer, keep if larger", newer, sameVersion(state.Done, 0), true, false},
+		{"skipped with same date but other size", nil, &state.Entry{Status: state.Skipped, SourceModified: t0, SourceSize: 1}, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Decide(source, tt.variant, tt.entry); got != tt.want {
+			if got := Decide(
+				source,
+				tt.variant,
+				tt.entry,
+				tt.keep,
+			); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -127,6 +136,29 @@ func TestScanQueuesCandidatesAndNotifiesWorkers(t *testing.T) {
 	}
 	if entries["skipped.gif"].Status != state.Skipped {
 		t.Errorf("skipped entry requeued: %+v", entries["skipped.gif"])
+	}
+}
+
+func TestScanRequeuesSkippedWhenKeepIfLarger(t *testing.T) {
+	db := openState(t)
+	db.Enqueue(ctx, "content", "skipped.gif", state.Image, t0, 1000)
+	claimed, _, _ := db.Claim(ctx, state.Image, []string{"content"})
+	db.MarkSkipped(ctx, claimed, 1200, time.Second)
+	b := bucketConfig("content")
+	b.KeepIfLarger = true
+	scanner := &Scanner{
+		Target: Target{Config: b, Store: newStoreDouble().givenObject("skipped.gif", 1000, t0)},
+		State:  db,
+		Logger: logger,
+	}
+
+	queued, err := scanner.Scan(ctx)
+
+	if err != nil || queued[state.Image] != 1 {
+		t.Fatalf("queued %v err %v", queued, err)
+	}
+	if e := entry(t, db, "content", "skipped.gif"); e.Status != state.Queued {
+		t.Errorf("entry: %+v", e)
 	}
 }
 

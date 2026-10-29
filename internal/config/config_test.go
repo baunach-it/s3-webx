@@ -38,7 +38,7 @@ func TestParseAppliesDefaults(t *testing.T) {
 		t.Errorf("work dir: %s", cfg.WorkDir())
 	}
 	b := cfg.Buckets[0]
-	if b.Region != "auto" || b.Interval != 15*time.Minute || b.CacheControl != CacheControlInherit || b.KeepIfLarger {
+	if b.Region != "auto" || b.Interval != 15*time.Minute || b.CacheControl != CacheControlInherit || !b.KeepIfLarger {
 		t.Errorf("bucket defaults: %+v", b)
 	}
 	if !slices.Equal(b.Image.Formats, []string{"jpg", "jpeg", "png", "gif"}) || b.Image.MaxEdge != 1600 || b.Image.Quality != 80 {
@@ -79,19 +79,19 @@ buckets:
       formats: [JPG, .Png]
     video:
       enabled: false
-    keep_if_larger: true
+    keep_if_larger: false
 `), env(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	one, two := cfg.Buckets[0], cfg.Buckets[1]
-	if one.Interval != time.Hour || one.Image.Quality != 70 || one.Image.MaxEdge != 1600 || one.Video.CRF != 30 || !one.Video.Enabled {
+	if one.Interval != time.Hour || one.Image.Quality != 70 || one.Image.MaxEdge != 1600 || one.Video.CRF != 30 || !one.Video.Enabled || !one.KeepIfLarger {
 		t.Errorf("bucket one: %+v", one)
 	}
 	if one.CacheControl != "public, max-age=60" {
 		t.Errorf("cache control: %q", one.CacheControl)
 	}
-	if two.Interval != 5*time.Minute || two.Image.MaxEdge != 800 || two.Image.Quality != 70 || two.Video.Enabled || two.Video.CRF != 30 || !two.KeepIfLarger {
+	if two.Interval != 5*time.Minute || two.Image.MaxEdge != 800 || two.Image.Quality != 70 || two.Video.Enabled || two.Video.CRF != 30 || two.KeepIfLarger {
 		t.Errorf("bucket two: %+v", two)
 	}
 	if !slices.Equal(two.Image.Formats, []string{"jpg", "png"}) {

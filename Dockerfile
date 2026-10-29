@@ -1,3 +1,11 @@
+# Tailwind's standalone CLI turns tailwind.css and the template into the stylesheet the binary embeds.
+FROM debian:13.7-slim AS css
+ADD --checksum=sha256:dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a --chmod=755 \
+    https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-x64 /usr/local/bin/tailwindcss
+WORKDIR /src
+COPY internal/web/tailwind.css internal/web/overview.html ./
+RUN tailwindcss -i tailwind.css -o app.css --minify
+
 FROM golang:1.26.8-alpine3.24 AS build
 
 # The converter tests shell out to vips and ffmpeg; a skipped test would hide a broken converter.
@@ -8,6 +16,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY --from=css /src/app.css internal/web/app.css
 COPY config.example.yaml ./
 
 RUN go vet ./...

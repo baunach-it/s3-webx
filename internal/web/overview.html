@@ -6,130 +6,260 @@
 <meta http-equiv="refresh" content="10">
 <meta name="color-scheme" content="light dark">
 <title>s3-webx</title>
-<style>
-  :root {
-    --bg: #fafafa; --fg: #1d1d1f; --muted: #6b6b70; --line: #dedee3; --card: #ffffff;
-    --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; --bar: #0969da;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #111214; --fg: #e8e8ea; --muted: #9a9aa2; --line: #2e2f33; --card: #1a1b1e;
-      --ok: #3fb950; --warn: #d29922; --bad: #f85149; --bar: #4493f8;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  h2 { font-size: 16px; margin: 24px 0 8px; }
-  .muted { color: var(--muted); }
-  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
-  .card h3 { font-size: 14px; margin: 0 0 6px; }
-  .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
-  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 6px; }
-  .bar span { display: block; height: 100%; background: var(--bar); }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-weight: 600; color: var(--muted); font-size: 12px; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .done { color: var(--ok); } .skipped { color: var(--warn); } .failed { color: var(--bad); }
-  .error { color: var(--bad); overflow-wrap: anywhere; }
-</style>
+<link rel="stylesheet" href="/assets/app.css?v={{.CSSVersion}}">
 </head>
-<body>
-<main>
-<h1>s3-webx</h1>
-<p class="muted">{{time .Now}} · refreshes every 10 s</p>
+<body class="m-0 font-sans leading-normal">
 
-<h2>Workers</h2>
-<div class="grid">
-{{- range .Workers}}
-  <div class="card">
-    <h3>{{.Kind}}</h3>
-    {{- if .Idle}}
-    <p class="muted">idle</p>
-    {{- else}}
-    <div>{{.Bucket}}</div>
-    <div class="key">{{.Key}}</div>
-    <div class="muted">running for {{duration .Running}}{{if .Percent}} · {{percent .Percent}}{{end}}</div>
-    {{- if .Percent}}
-    <div class="bar"><span style="width: {{width .Percent}}%"></span></div>
-    {{- end}}
-    {{- end}}
-  </div>
-{{- end}}
-</div>
-
-<h2>Buckets</h2>
-<div class="grid">
-{{- range .Buckets}}
-  {{- $b := .}}
-  <div class="card">
-    <h3>{{.Name}}</h3>
-    <div class="muted">
-      last scan: {{if .LastScan}}{{time .LastScan}}{{else}}not yet{{end}}
+<header class="bg-card shadow-[var(--header-shadow)]">
+  <div class="h-1 bg-[#980073]"></div>
+  <div class="relative mx-auto flex max-w-7xl flex-col items-center gap-2 px-4 py-2 lg:px-8">
+    <div>
+      <h1 class="text-center text-lg font-semibold text-ink">s3-webx</h1>
+      <p class="text-center text-xs text-muted">Data as of {{time .Now}} · refreshes every 10 s</p>
     </div>
-    {{- if .LastScanError}}
-    <div class="error">{{.LastScanError}}</div>
-    {{- end}}
-    <div>queued: {{.Queued}} · saved: {{bytes .BytesSaved}} ({{bytes .BytesBefore}} → {{bytes .BytesAfter}})</div>
-    <div class="scroll">
-    <table>
-      <tr><th></th>{{range $.Statuses}}<th class="num">{{.}}</th>{{end}}</tr>
-      {{- range $kind := $.Kinds}}
-      <tr><td>{{$kind}}</td>{{range $st := $.Statuses}}<td class="num">{{index (index $b.Counts $kind) $st}}</td>{{end}}</tr>
+    <div class="inline-flex items-center rounded-full bg-pill px-3 py-1 lg:absolute lg:top-1/2 lg:left-8 lg:-translate-y-1/2" role="status">
+      {{- if .Converting}}
+      <div class="size-3 rounded-full bg-run motion-safe:animate-pulse" aria-hidden="true"></div><span class="ml-2 text-sm font-medium text-run">Converting</span>
+      {{- else}}
+      <div class="size-3 rounded-full bg-off" aria-hidden="true"></div><span class="ml-2 text-sm font-medium text-muted">Idle</span>
       {{- end}}
-    </table>
     </div>
   </div>
-{{- else}}
-  <p class="muted">No buckets configured.</p>
-{{- end}}
-</div>
+</header>
 
-<h2>Recent conversions</h2>
-{{- if .Recent}}
-<div class="scroll">
-<table>
-  <tr><th>Path</th><th>Kind</th><th>Status</th><th class="num">Before</th><th class="num">After</th><th class="num">Duration</th></tr>
-  {{- range .Recent}}
-  <tr>
-    <td><span class="muted">{{.Bucket}}/</span><span class="key">{{.Key}}</span></td>
-    <td>{{.Kind}}</td>
-    <td class="{{.Status}}">{{.Status}}</td>
-    <td class="num">{{bytes .SourceSize}}</td>
-    <td class="num">{{bytes .OutputSize}}</td>
-    <td class="num">{{duration .Duration}}</td>
-  </tr>
-  {{- end}}
-</table>
-</div>
-{{- else}}
-<p class="muted">None yet.</p>
-{{- end}}
+<main class="mx-auto grid max-w-[1456px] gap-6 px-4 pt-4 pb-6 sm:px-6 lg:px-8">
 
-<h2>Failures</h2>
-{{- if .Failures}}
-<div class="scroll">
-<table>
-  <tr><th>Path</th><th>Kind</th><th class="num">Attempts</th><th>Error</th><th>When</th></tr>
-  {{- range .Failures}}
-  <tr>
-    <td><span class="muted">{{.Bucket}}/</span><span class="key">{{.Key}}</span></td>
-    <td>{{.Kind}}</td>
-    <td class="num">{{.Attempts}}</td>
-    <td class="error">{{.Error}}</td>
-    <td class="num">{{time .UpdatedAt}}</td>
-  </tr>
+  {{- with .Totals}}
+  <section class="card" aria-labelledby="h-saved">
+    <header class="card-head">
+      <h2 id="h-saved" class="card-title">Storage saved</h2>
+      <div class="card-right">{{.Done}} files converted · {{len $.Buckets}} {{if eq (len $.Buckets) 1}}bucket{{else}}buckets{{end}}</div>
+    </header>
+    <div class="card-body">
+      <div class="section">
+        <p class="caption"><span class="font-semibold text-text">All buckets</span> originals against their variants</p>
+        <div class="flex flex-wrap items-baseline gap-2">
+          <b class="text-xl font-semibold tracking-tight text-ink">{{bytes .Saved}}</b>
+          {{- with change .Before .After}}
+          <span class="text-xs text-muted">saved · <strong class="{{.Class}}">{{.Text}}</strong></span>
+          {{- end}}
+        </div>
+      </div>
+      <div class="section flex flex-col gap-3">
+        <div class="flex min-w-0 flex-col gap-1">
+          <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+            <div class="min-w-0 text-sm wrap-anywhere">Originals <span class="text-xs text-faint">· before conversion</span></div>
+            <div class="text-sm font-semibold whitespace-nowrap text-ink">{{bytes .Before}} <span class="font-medium text-muted">· {{if .Before}}100 %{{else}}–{{end}}</span></div>
+          </div>
+          <div class="flex items-center gap-2"><progress class="bar" value="{{if .Before}}100{{else}}0{{end}}" max="100" aria-label="Originals: {{bytes .Before}}"></progress></div>
+        </div>
+        <div class="flex min-w-0 flex-col gap-1">
+          <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+            <div class="min-w-0 text-sm wrap-anywhere">Variants <span class="text-xs text-faint">· after conversion</span></div>
+            <div class="text-sm font-semibold whitespace-nowrap text-ink">{{bytes .After}} <span class="font-medium text-muted">· {{if .Before}}{{percent (share .After .Before)}}{{else}}–{{end}}</span></div>
+          </div>
+          <div class="flex items-center gap-2"><progress class="bar bar-ok" value="{{clamp (share .After .Before)}}" max="100" aria-label="Variants: {{bytes .After}}, {{percent (share .After .Before)}} of the originals"></progress></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <dl class="grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div class="card">
+      <dt class="card-head"><span class="state text-text"><i aria-hidden="true" class="sym sym-queued">○</i>Queued</span></dt>
+      <dd class="card-body"><span class="text-2xl leading-tight font-semibold {{if .Queued}}text-ink{{else}}text-faint{{end}}">{{.Queued}}</span><span class="text-xs text-muted">{{.Running}} running</span></dd>
+    </div>
+    <div class="card">
+      <dt class="card-head"><span class="state text-text"><i aria-hidden="true" class="sym sym-done">✓</i>Done</span></dt>
+      <dd class="card-body"><span class="text-2xl leading-tight font-semibold {{if .Done}}text-ink{{else}}text-faint{{end}}">{{.Done}}</span><span class="text-xs text-muted">{{.Images}} images, {{.Videos}} videos</span></dd>
+    </div>
+    <div class="card">
+      <dt class="card-head"><span class="state text-text"><i aria-hidden="true" class="sym sym-none">–</i>Skipped</span></dt>
+      <dd class="card-body"><span class="text-2xl leading-tight font-semibold {{if .Skipped}}text-ink{{else}}text-faint{{end}}">{{.Skipped}}</span><span class="text-xs text-muted">variant not smaller, not uploaded</span></dd>
+    </div>
+    <div class="card">
+      <dt class="card-head"><span class="state text-text"><i aria-hidden="true" class="sym sym-failed">✕</i>Failed</span>{{if .Failed}}<span class="level">check</span>{{end}}</dt>
+      <dd class="card-body"><span class="text-2xl leading-tight font-semibold {{if .Failed}}text-chg-up{{else}}text-faint{{end}}">{{.Failed}}</span><span class="text-xs text-muted">{{if .Failed}}<a class="underline" href="#failures">see failures below</a>{{else}}none{{end}}</span></dd>
+    </div>
+  </dl>
   {{- end}}
-</table>
-</div>
-{{- else}}
-<p class="muted">None.</p>
-{{- end}}
+
+  <div class="grid gap-3 md:grid-cols-2">
+  {{- range .Workers}}
+    <section class="card" aria-labelledby="h-{{.Kind}}">
+      <header class="card-head">
+        <h2 id="h-{{.Kind}}" class="card-title">{{.Label}}</h2>
+        <div class="card-right">
+          {{- if .Idle}}<span class="state"><i aria-hidden="true" class="sym sym-idle">○</i>idle</span>
+          {{- else}}<span class="state"><i aria-hidden="true" class="sym sym-running">●</i>running</span>{{end}}
+        </div>
+      </header>
+      <div class="card-body">
+        {{- if .Idle}}
+        <p class="text-xs text-faint italic">{{if .Queued}}{{.Queued}} queued, starts shortly.{{else}}Nothing queued. Picks up new {{.Plural}} after the next scan.{{end}}</p>
+        {{- else}}
+        <div class="flex min-w-0 flex-col gap-1">
+          <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+            <div class="min-w-0 text-sm wrap-anywhere"><span class="text-muted">{{.Bucket}}/</span>{{.Key}}</div>
+            {{- if .Percent}}
+            <div class="text-sm font-semibold whitespace-nowrap text-ink">{{percent .Percent}}</div>
+            {{- end}}
+          </div>
+          <div class="flex items-center gap-2">
+            {{- if .Percent}}
+            <progress class="bar bar-run" value="{{clamp .Percent}}" max="100" aria-label="{{.Label}}: {{percent .Percent}}"></progress>
+            {{- end}}
+            <span class="text-xs whitespace-nowrap text-muted">running for {{duration .Running}}</span>
+          </div>
+        </div>
+        {{- end}}
+      </div>
+    </section>
+  {{- end}}
+  </div>
+
+  <div class="grid gap-3{{if gt (len .Buckets) 1}} lg:grid-cols-2{{end}}">
+  {{- range .Buckets}}
+    {{- $b := .}}
+    <section class="card" aria-label="Bucket {{.Name}}">
+      <header class="card-head">
+        <h2 class="card-title wrap-anywhere">{{.Name}}</h2>
+        <div class="card-right">
+          {{- if .LastScanError}}<span class="state text-chg-up"><i aria-hidden="true" class="sym sym-failed">✕</i>scan failed</span>{{end}}
+          <span class="chip">{{if .LastScan}}last scan {{time .LastScan}}{{else}}not yet scanned{{end}}</span>
+        </div>
+      </header>
+      <div class="card-body">
+        {{- if .LastScanError}}
+        <p class="text-xs wrap-anywhere text-chg-up">{{.LastScanError}}</p>
+        {{- end}}
+        <div class="section">
+          <p class="caption"><span class="font-semibold text-text">Jobs by kind</span> saved {{bytes .BytesSaved}} · {{bytes .BytesBefore}} to {{bytes .BytesAfter}} · {{.Queued}} queued</p>
+          <div class="max-w-full overflow-x-auto"><table class="w-full border-collapse text-[13px]" aria-label="Jobs in {{.Name}} by kind">
+            <thead><tr>
+              <th scope="col" class="th">Kind</th>
+              {{- range $.Statuses}}
+              <th scope="col" class="th th-num">{{.}}</th>
+              {{- end}}
+            </tr></thead>
+            <tbody>
+            {{- range $kind := $.Kinds}}
+              <tr class="group"><td class="td">{{$kind}}</td>
+              {{- range $st := $.Statuses}}
+                {{- $n := index (index $b.Counts $kind) $st}}
+                <td class="td td-num{{if not $n}} td-zero{{else if eq $st "failed"}} td-bad{{end}}">{{$n}}</td>
+              {{- end}}
+              </tr>
+            {{- end}}
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+    </section>
+  {{- else}}
+    <p class="text-xs text-faint italic">No buckets configured.</p>
+  {{- end}}
+  </div>
+
+  <section class="card" id="recent" aria-labelledby="h-recent">
+    <header class="card-head">
+      <h2 id="h-recent" class="card-title">Recent conversions</h2>
+      <div class="card-right">{{.RecentPage.Total}} done or skipped · newest first · 25 per page</div>
+    </header>
+    <div class="card-body">
+      {{- if .Recent}}
+      <table class="stack w-full border-collapse text-[13px]" aria-label="Recent conversions, page {{.RecentPage.Page}} of {{.RecentPage.Pages}}">
+        <thead><tr>
+          <th scope="col" class="th">Path</th><th scope="col" class="th">Kind</th><th scope="col" class="th">Status</th>
+          <th scope="col" class="th th-num">Before</th><th scope="col" class="th th-num">After</th>
+          <th scope="col" class="th th-num">Change</th><th scope="col" class="th th-num">Duration</th>
+        </tr></thead>
+        <tbody>
+        {{- range .Recent}}
+        <tr class="group">
+          <td class="td td-name" data-label="Path"><span class="text-muted">{{.Bucket}}/</span>{{.Key}}</td>
+          <td class="td" data-label="Kind">{{.Kind}}</td>
+          <td class="td" data-label="Status">{{if eq .Status "done"}}<span class="state"><i aria-hidden="true" class="sym sym-done">✓</i>done</span>{{else}}<span class="state"><i aria-hidden="true" class="sym sym-none">–</i>{{.Status}}</span>{{end}}</td>
+          <td class="td td-num" data-label="Before">{{bytes .SourceSize}}</td>
+          <td class="td td-num" data-label="After">{{bytes .OutputSize}}</td>
+          {{- with change .SourceSize .OutputSize}}
+          <td class="td td-num {{.Class}}" data-label="Change" title="variant {{if eq .Class "smaller"}}smaller than{{else if eq .Class "larger"}}larger than{{else}}same size as{{end}} original">{{.Text}}</td>
+          {{- end}}
+          <td class="td td-num td-dim" data-label="Duration">{{duration .Duration}}</td>
+        </tr>
+        {{- end}}
+        </tbody>
+      </table>
+      {{- else}}
+      <p class="text-xs text-faint italic">None yet.</p>
+      {{- end}}
+    </div>
+    {{- with .RecentPage}}{{if gt .Pages 1}}
+    <nav class="card-foot" aria-label="Recent conversions pages">
+      <span class="font-semibold text-text">Page {{.Page}} of {{.Pages}}</span>
+      <span class="inline-flex flex-wrap items-center gap-1.5">
+        {{- if .Newer}}
+        <a class="pg" href="{{.Newer}}" rel="prev">← Newer</a>
+        {{- else}}
+        <span class="pg pg-off" aria-disabled="true">← Newer</span>
+        {{- end}}
+        {{- if .Older}}
+        <a class="pg" href="{{.Older}}" rel="next">Older →</a>
+        {{- else}}
+        <span class="pg pg-off" aria-disabled="true">Older →</span>
+        {{- end}}
+      </span>
+    </nav>
+    {{- end}}{{end}}
+  </section>
+
+  <section class="card" id="failures" aria-labelledby="h-failures">
+    <header class="card-head">
+      <h2 id="h-failures" class="card-title">Failures</h2>
+      <div class="card-right">{{if .Totals.Failed}}<span class="state"><i aria-hidden="true" class="sym sym-failed">✕</i>{{.Totals.Failed}} failed</span>{{else}}<span class="state"><i aria-hidden="true" class="sym sym-done">✓</i>none</span>{{end}}</div>
+    </header>
+    <div class="card-body">
+      {{- if .Failures}}
+      <table class="stack w-full border-collapse text-[13px]" aria-label="Failures, page {{.FailPage.Page}} of {{.FailPage.Pages}}">
+        <thead><tr>
+          <th scope="col" class="th">Path</th><th scope="col" class="th">Kind</th><th scope="col" class="th th-num">Attempts</th>
+          <th scope="col" class="th">Error</th><th scope="col" class="th th-num">When</th>
+        </tr></thead>
+        <tbody>
+        {{- range .Failures}}
+          <tr class="group">
+            <td class="td td-name" data-label="Path"><span class="text-muted">{{.Bucket}}/</span>{{.Key}}</td>
+            <td class="td" data-label="Kind">{{.Kind}}</td>
+            <td class="td td-num" data-label="Attempts">{{.Attempts}}</td>
+            <td class="td td-err" data-label="Error">{{.Error}}</td>
+            <td class="td td-num td-dim" data-label="When">{{time .UpdatedAt}}</td>
+          </tr>
+        {{- end}}
+        </tbody>
+      </table>
+      {{- else}}
+      <p class="text-xs text-faint italic">None.</p>
+      {{- end}}
+    </div>
+    {{- with .FailPage}}{{if gt .Pages 1}}
+    <nav class="card-foot" aria-label="Failure pages">
+      <span class="font-semibold text-text">Page {{.Page}} of {{.Pages}}</span>
+      <span class="inline-flex flex-wrap items-center gap-1.5">
+        {{- if .Newer}}
+        <a class="pg" href="{{.Newer}}" rel="prev">← Newer</a>
+        {{- else}}
+        <span class="pg pg-off" aria-disabled="true">← Newer</span>
+        {{- end}}
+        {{- if .Older}}
+        <a class="pg" href="{{.Older}}" rel="next">Older →</a>
+        {{- else}}
+        <span class="pg pg-off" aria-disabled="true">Older →</span>
+        {{- end}}
+      </span>
+    </nav>
+    {{- end}}{{end}}
+  </section>
+
 </main>
 </body>
 </html>

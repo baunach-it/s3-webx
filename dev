@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER="devcontainer-$(basename "$SCRIPT_DIR")"
 
+# Same release and checksum as the css stage in the Dockerfile.
+TAILWIND_VERSION="v4.3.3"
+TAILWIND_SHA256="dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
+CSS_OUT="internal/web/app.css"
+
 in_env() {
     [ "${DEVCONTAINER:-}" = "true" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]
 }
@@ -22,12 +27,21 @@ run_in_env() {
     fi
 }
 
+# The embedded stylesheet must exist and be newer than its sources before go compiles the web package.
+ensure_css() {
+    local out="$SCRIPT_DIR/$CSS_OUT"
+    if [ ! -f "$out" ] || [ -n "$(find "$SCRIPT_DIR/internal/web/tailwind.css" "$SCRIPT_DIR/internal/web/overview.html" -newer "$out")" ]; then
+        "$SCRIPT_DIR/dev" css
+    fi
+}
+
 usage() {
     cat <<USAGE
 s3-webx developer commands
 
 Usage: ./dev <command>
 
+  css        generate internal/web/app.css with the Tailwind standalone CLI ($TAILWIND_VERSION)
   build      go build -o bin/s3-webx ./cmd/s3-webx
   test       go test ./...
   lint       go vet ./... and gofmt -l (fails on unformatted files)
@@ -38,13 +52,34 @@ USAGE
 }
 
 case "${1:-}" in
+    css)
+        if ! in_env; then
+            run_in_env ./dev css
+            exit 0
+        fi
+        cli="$SCRIPT_DIR/bin/tailwindcss-$TAILWIND_VERSION"
+        if [ ! -x "$cli" ]; then
+            mkdir -p "$SCRIPT_DIR/bin"
+            curl -fsSL -o "$cli.download" \
+                "https://github.com/tailwindlabs/tailwindcss/releases/download/$TAILWIND_VERSION/tailwindcss-linux-x64"
+            echo "$TAILWIND_SHA256  $cli.download" | sha256sum -c -
+            chmod +x "$cli.download"
+            mv "$cli.download" "$cli"
+        fi
+        "$cli" -i "$SCRIPT_DIR/internal/web/tailwind.css" -o "$SCRIPT_DIR/$CSS_OUT" --minify
+        # Tailwind leaves an unchanged file untouched; the new mtime keeps ensure_css from rebuilding every time.
+        touch "$SCRIPT_DIR/$CSS_OUT"
+        ;;
     build)
+        ensure_css
         run_in_env go build -o bin/s3-webx ./cmd/s3-webx
         ;;
     test)
+        ensure_css
         run_in_env go test ./...
         ;;
     lint)
+        ensure_css
         run_in_env go vet ./...
         run_in_env sh -c 'out=$(gofmt -l .); if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi'
         ;;

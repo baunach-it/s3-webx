@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -388,12 +389,14 @@ func TestOverviewShowsWorkersBucketsAndResults(t *testing.T) {
 	f.seed(t, "content", "fotos/a.jpg", state.Image, state.Done, 200)
 	f.seed(t, "content", "fotos/broken.jpg", state.Image, state.Failed, 0)
 
-	r := basicRequest("admin", "secret")
-	w := httptest.NewRecorder()
-	f.handler().ServeHTTP(w, r)
+	w := overviewAt(t, f.handler(), "/")
 
 	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
 		t.Fatalf("status %d type %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	csp := "default-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+	if got := w.Header().Get("Content-Security-Policy"); got != csp {
+		t.Errorf("csp %q", got)
 	}
 	body := w.Body.String()
 	for _, want := range []string{
@@ -401,20 +404,163 @@ func TestOverviewShowsWorkersBucketsAndResults(t *testing.T) {
 		"idle",
 		"clips/&lt;b&gt;film&lt;/b&gt;.mp4",
 		"37.0 %",
-		"width: 37.0%",
+		`<progress class="bar bar-run" value="37.0" max="100"`,
 		"2026-10-29 08:00:00 UTC",
 		"fotos/a.jpg",
 		"1000 B",
+		`<th scope="col" class="th th-num">Change</th>`,
+		`data-label="Change" title="variant smaller than original">−80.0 %</td>`,
 		"vips: bad header",
 		"failover",
-		"not yet",
+		"not yet scanned",
+		`href="/assets/app.css?v=` + cssVersion + `"`,
+		"Converting",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("overview lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "<script") || strings.Contains(body, "<b>film") {
-		t.Error("overview contains script or unescaped key")
+	if strings.Contains(body, "<script") || strings.Contains(body, "<b>film") || strings.Contains(body, "style=") {
+		t.Error("overview contains script, inline style or unescaped key")
+	}
+}
+
+func overviewAt(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	r.SetBasicAuth("admin", "secret")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func TestOverviewShowsEveryBucketOnItsOwn(t *testing.T) {
+	f := newFixture(t)
+	f.activity.givenScan("failover", worker.ScanResult{At: t0, Err: errors.New("dial tcp: <refused>")})
+	f.seed(t, "content", "a.jpg", state.Image, state.Done, 200)
+	f.seed(t, "failover", "b.jpg", state.Image, state.Done, 500)
+	f.seed(t, "failover", "c.mp4", state.Video, state.Queued, 0)
+
+	body := overviewAt(t, f.handler(), "/").Body.String()
+
+	for _, want := range []string{
+		`aria-label="Bucket content"`,
+		`aria-label="Bucket failover"`,
+		"2 files converted · 2 buckets",
+		"saved 800 B · 1000 B to 200 B · 0 queued",
+		"saved 500 B · 1000 B to 500 B · 1 queued",
+		"dial tcp: &lt;refused&gt;",
+		"scan failed",
+		"lg:grid-cols-2",
+		"1.3 KiB",
+		"−65.0 %",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("overview lacks %q", want)
+		}
+	}
+}
+
+func TestOverviewPaging(t *testing.T) {
+	f := newFixture(t)
+	for i := range 60 {
+		f.seed(t, "content", fmt.Sprintf("done-%02d.jpg", i), state.Image, state.Done, 200)
+	}
+	for i := range 30 {
+		f.seed(t, "failover", fmt.Sprintf("broken-%02d.jpg", i), state.Image, state.Failed, 0)
+	}
+	h := f.handler()
+
+	tests := []struct {
+		query   string
+		recent  string
+		fails   string
+		rows    int
+		present []string
+		absent  []string
+	}{
+		{
+			"/", "Recent conversions, page 1 of 3", "Failures, page 1 of 2", 25 + 25,
+			[]string{`href="?recent=2&amp;failures=1#recent" rel="next"`, `href="?recent=1&amp;failures=2#failures" rel="next"`},
+			[]string{`rel="prev"`},
+		},
+		{
+			"/?recent=2&failures=2", "Recent conversions, page 2 of 3", "Failures, page 2 of 2", 25 + 5,
+			[]string{
+				`href="?recent=1&amp;failures=2#recent" rel="prev"`,
+				`href="?recent=3&amp;failures=2#recent" rel="next"`,
+				`href="?recent=2&amp;failures=1#failures" rel="prev"`,
+			},
+			[]string{`#failures" rel="next"`},
+		},
+		{
+			"/?recent=99&failures=-4", "Recent conversions, page 3 of 3", "Failures, page 1 of 2", 10 + 25,
+			[]string{`href="?recent=2&amp;failures=1#recent" rel="prev"`},
+			[]string{`#recent" rel="next"`},
+		},
+		{
+			"/?recent=x&failures=", "Recent conversions, page 1 of 3", "Failures, page 1 of 2", 25 + 25,
+			nil, nil,
+		},
+	}
+	for _, tt := range tests {
+		w := overviewAt(t, h, tt.query)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: status %d", tt.query, w.Code)
+			continue
+		}
+		body := w.Body.String()
+		for _, want := range append([]string{tt.recent, tt.fails}, tt.present...) {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: lacks %q", tt.query, want)
+			}
+		}
+		for _, unwanted := range tt.absent {
+			if strings.Contains(body, unwanted) {
+				t.Errorf("%s: has %q", tt.query, unwanted)
+			}
+		}
+		if rows := strings.Count(body, `data-label="Path"`); rows != tt.rows {
+			t.Errorf("%s: %d rows, want %d", tt.query, rows, tt.rows)
+		}
+	}
+}
+
+func TestOverviewWithOnePageHasNoPager(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t, "content", "a.jpg", state.Image, state.Done, 200)
+	f.seed(t, "content", "b.jpg", state.Image, state.Failed, 0)
+
+	body := overviewAt(t, f.handler(), "/?recent=5&failures=5").Body.String()
+
+	if strings.Contains(body, "card-foot") || strings.Contains(body, "Newer") {
+		t.Error("single page shows a pager")
+	}
+	if !strings.Contains(body, "Recent conversions, page 1 of 1") || !strings.Contains(body, "Failures, page 1 of 1") {
+		t.Error("page labels missing")
+	}
+}
+
+func TestStylesheet(t *testing.T) {
+	f := newFixture(t)
+	h := f.handler()
+
+	w := overviewAt(t, h, "/assets/app.css?v="+cssVersion)
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/css; charset=utf-8" {
+		t.Fatalf("status %d type %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "private, max-age=31536000, immutable" {
+		t.Errorf("cache control %q", cc)
+	}
+	if w.Body.String() != string(appCSS) || !strings.Contains(w.Body.String(), ".card") {
+		t.Error("body is not the embedded stylesheet")
+	}
+
+	if w := get(t, h, "/assets/app.css", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("without auth: status %d", w.Code)
+	}
+	if w := overviewAt(t, h, "/assets/other.css"); w.Code != http.StatusNotFound {
+		t.Errorf("unknown asset: status %d", w.Code)
 	}
 }
 
@@ -422,6 +568,26 @@ func TestFormatBytes(t *testing.T) {
 	for n, want := range map[int64]string{0: "0 B", 1023: "1023 B", 1536: "1.5 KiB", 9472360: "9.0 MiB", -2048: "-2.0 KiB"} {
 		if got := formatBytes(n); got != want {
 			t.Errorf("formatBytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestSizeChange(t *testing.T) {
+	tests := []struct {
+		name   string
+		source int64
+		output int64
+		want   change
+	}{
+		{"smaller", 1000, 60, change{"−94.0 %", "smaller"}},
+		{"larger", 1000, 1002, change{"+0.2 %", "larger"}},
+		{"equal", 1000, 1000, change{"±0.0 %", "same"}},
+		{"rounds to zero", 100000, 99996, change{"±0.0 %", "same"}},
+		{"empty source", 0, 200, change{"–", "same"}},
+	}
+	for _, tt := range tests {
+		if got := sizeChange(tt.source, tt.output); got != tt.want {
+			t.Errorf("%s: sizeChange(%d, %d) = %+v, want %+v", tt.name, tt.source, tt.output, got, tt.want)
 		}
 	}
 }

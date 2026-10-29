@@ -22,7 +22,8 @@ defaults:
     max_height: 1080
     crf: 33
     audio_bitrate: 96k
-  keep_if_larger: false
+  # true uploads the variant even when it is larger than the original; false skips it.
+  keep_if_larger: true
   # "inherit" copies Cache-Control from the original; any other value is set as is.
   cache_control: inherit
 

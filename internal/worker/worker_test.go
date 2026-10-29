@@ -141,8 +141,11 @@ func TestLargerOutputIsSkippedUnlessKept(t *testing.T) {
 	kept.convert.givenOutputSize(2000)
 	kept.enqueue(t, "a.jpg", state.Image, 1000)
 	kept.worker(state.Image).ProcessNext(ctx)
-	if len(kept.store.uploads) != 1 {
+	if len(kept.store.uploads) != 1 || kept.store.uploads[0].Size != 2000 {
 		t.Errorf("keep_if_larger: uploads %+v", kept.store.uploads)
+	}
+	if e := entry(t, kept.db, "content", "a.jpg"); e.Status != state.Done || e.OutputSize != 2000 {
+		t.Errorf("keep_if_larger: entry %+v", e)
 	}
 }
 
@@ -265,3 +268,36 @@ func TestCleanWorkDirRemovesOnlyJobFolders(t *testing.T) {
 }
 
 var _ Store = (*store.Bucket)(nil)
+
+func TestEmptySourceFailsAtOnceUntilANewVersion(t *testing.T) {
+	f := newFixture(t)
+	f.store.givenObject("leer.jpg", 0, t0)
+	f.enqueue(t, "leer.jpg", state.Image, 0)
+
+	worked, err := f.worker(state.Image).ProcessNext(ctx)
+
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	e := entry(t, f.db, "content", "leer.jpg")
+	if e.Status != state.Failed || e.Attempts != state.MaxAttempts || e.Error != "source object is empty (0 bytes)" {
+		t.Errorf("entry: %+v", e)
+	}
+	if len(f.store.downloads) != 0 || len(f.convert.images) != 0 || len(f.store.uploads) != 0 {
+		t.Errorf("downloads %v conversions %v uploads %v", f.store.downloads, f.convert.images, f.store.uploads)
+	}
+
+	scanner := &Scanner{Target: Target{Config: f.bucket, Store: f.store}, State: f.db, Logger: logger}
+	if queued, err := scanner.Scan(ctx); err != nil || queued[state.Image] != 0 {
+		t.Errorf("same version rescanned: queued %v err %v", queued, err)
+	}
+
+	f.store.objects = nil
+	f.store.givenObject("leer.jpg", 2048, t0.Add(time.Hour))
+	if queued, err := scanner.Scan(ctx); err != nil || queued[state.Image] != 1 {
+		t.Errorf("new version: queued %v err %v", queued, err)
+	}
+	if e := entry(t, f.db, "content", "leer.jpg"); e.Status != state.Queued || e.Attempts != 0 {
+		t.Errorf("new version entry: %+v", e)
+	}
+}

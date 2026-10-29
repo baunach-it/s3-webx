@@ -8,7 +8,9 @@ Docker image that keeps web-ready variants next to the images and videos in S3-c
 - Converts every image to WebP and stores it next to the original with the extension appended:
   `foto.jpg` → `foto.jpg.webp`. GIFs become animated WebP.
 - Converts every video to WebM (VP9 + Opus): `film.mp4` → `film.mp4.webm`.
-- Keeps a variant only if it is smaller than the original. Originals are never modified or deleted.
+- Keeps every variant by default, even one larger than the original, so a website can always link the `.webp` or
+  `.webm`. With `keep_if_larger: false` a variant that is not smaller is skipped. Originals are never modified or
+  deleted.
 - Reports its state over HTTP: health check, an overview page and a status API.
 
 Images are converted with [libvips](https://www.libvips.org/), videos with [FFmpeg](https://ffmpeg.org/).
@@ -67,6 +69,10 @@ The service is configured by a single YAML file, passed with `-config` (default 
 referenced as `${VAR}` and resolved from the environment at startup; an unset variable or an unknown key stops the
 service. All keys with their defaults: [`config.example.yaml`](config.example.yaml).
 
+`keep_if_larger` (default `true`, per bucket or in `defaults`) uploads the variant even when it is not smaller than the
+original. Set it to `false` to keep only variants that save bytes; such files end as `skipped`. While it is `true`, a
+file once skipped is converted again on the next scan.
+
 ## HTTP
 
 The service listens on `listen` (default `:8080`).
@@ -75,6 +81,7 @@ The service listens on `listen` (default `:8080`).
 |---|---|---|
 | `GET /healthz` | none | `200 ok` when the state database answers, otherwise `503` |
 | `GET /` | Basic (`auth.ui_user`, `auth.ui_password`) | HTML overview, refreshes every 10 s |
+| `GET /assets/app.css` | Basic | stylesheet of the overview |
 | `GET /api/status` | Bearer (`auth.api_token`) | workers and per-bucket counters |
 | `GET /api/buckets/{name}/files` | Bearer | entries of one bucket, newest first |
 | `GET /api/buckets/{name}/files/{key}` | Bearer | state of one original, incl. whether its variant exists |
@@ -88,6 +95,15 @@ The service listens on `listen` (default `:8080`).
   `kind` (`image`, `video`), `limit` (1–1000, default 100) and `offset`.
 - The key in `files/{key}` is the original's full key, URL-encoded per segment:
   `/api/buckets/content/files/aktion/2026-10-rstorc/Foto%201.JPG`.
+- The overview shows the saved storage, counters per status, both workers, one card per bucket, and two tables with
+  25 rows per page: recent conversions (`done`, `skipped`) and failures. `?recent=N&failures=M` selects the pages; the
+  links keep the other table's page, and a number that is not a page falls back to the first or last one.
+- The overview runs no script and loads only its own stylesheet:
+  `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'`. The
+  stylesheet is linked with a content hash (`/assets/app.css?v=…`) and cached for a year
+  (`Cache-Control: private, max-age=31536000, immutable`).
+- An empty original (0 bytes) is marked `failed` with `source object is empty (0 bytes)` at once and is not retried
+  until its object changes.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" https://s3-webx.example/api/status
@@ -145,6 +161,10 @@ with the same file objects.
 
 `baunach/s3-webx` on Docker Hub, `linux/amd64` only, tags `latest` and the full commit SHA. Alpine with libvips and
 FFmpeg from the distribution, a static Go binary, non-root user `10001`.
+
+The stylesheet is built from `internal/web/tailwind.css` and the template with the Tailwind CSS standalone CLI
+(v4.3.3, checksum pinned) in its own stage; locally `./dev css` does the same, and `./dev build`, `test` and `lint` run
+it when `internal/web/app.css` is missing or older than its sources. The generated file is not committed.
 
 The build stage runs `go vet` and all tests, including the converter tests against the real `vips` and `ffmpeg`; a
 failing or skipped test stops the build. Locally: `./dev image` builds `baunach/s3-webx:local`.

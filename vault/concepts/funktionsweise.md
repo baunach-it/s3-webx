@@ -35,7 +35,7 @@ Scanner je Bucket (alle `interval`)            Arbeiter image / video (je einer,
   List ──▶ KindOf ──▶ Decide ──▶ Enqueue ──▶ Wake ──▶ Claim (aelteste zuerst, alle Buckets)
                                                     ──▶ Download nach /data/tmp/job-*/source.<ext>
                                                     ──▶ vips | ffmpeg ──▶ variant.webp | variant.webm
-                                                    ──▶ nicht kleiner? → skipped, kein Upload
+                                                    ──▶ nicht kleiner und keep_if_larger aus? → skipped, kein Upload
                                                     ──▶ sonst Upload <key>.webp | <key>.webm → done
 ```
 
@@ -48,8 +48,10 @@ Scanner je Bucket (alle `interval`)            Arbeiter image / video (je einer,
   ihn weckt.
 - **Video aus:** Ein Bucket mit `video.enabled: false` liefert keine Video-Kandidaten, und der Video-Arbeiter bedient
   ihn auch nicht — so bleiben Eintraege aus einer frueheren Konfiguration liegen, statt umgewandelt zu werden.
-- **Ergebnis:** Ist die Variante nicht kleiner als das Original und `keep_if_larger` aus, wird sie nicht hochgeladen,
-  der Eintrag heisst `skipped` und traegt die gemessene Groesse. Sonst Upload mit `Content-Type` `image/webp` bzw.
+- **Ergebnis:** `keep_if_larger` steht per Default auf `true`: die Variante wird immer hochgeladen und der Eintrag
+  heisst `done`, auch wenn sie groesser ist; die Protokollzeile zeigt beide Groessen. Ist die Option aus und die
+  Variante nicht kleiner als das Original, wird sie nicht hochgeladen, der Eintrag heisst `skipped` und traegt die
+  gemessene Groesse. Sonst Upload mit `Content-Type` `image/webp` bzw.
   `video/webm`; `Cache-Control` kommt bei `inherit` per `StatObject` vom Original, sonst ist es der feste Wert.
 - **Arbeitsordner:** `tmp/` neben `state.db`, also `/data/tmp` auf dem Volume, damit grosse Videos nicht im
   Container-Dateisystem landen. Jede Datei bekommt einen eigenen Ordner `job-*`, der danach immer entfernt wird.
@@ -84,7 +86,8 @@ Dauer, `queued_at` und `updated_at`.
 
 - **Entscheidung je Original** (`worker.Decide`, reine Funktion): umwandeln, wenn die Variante fehlt oder ihr
   LastModified aelter ist als das des Originals — ausser `state.db` kennt fuer genau diese Quellversion schon
-  `skipped`, oder `failed` mit drei Versuchen (`state.MaxAttempts`).
+  `failed` mit drei Versuchen (`state.MaxAttempts`), oder `skipped` bei `keep_if_larger: false`. Mit
+  `keep_if_larger: true` plant `Decide` einen `skipped`-Eintrag derselben Quellversion erneut ein.
 - **Versuche** zaehlen je Quellversion. `Enqueue` mit einer neuen Quellversion setzt sie auf 0 und leert den
   Fehlertext; mit derselben Quellversion bleiben sie stehen, ein fehlgeschlagener Eintrag wird also beim naechsten
   Scan erneut versucht, bis drei Versuche erreicht sind.
@@ -92,6 +95,10 @@ Dauer, `queued_at` und `updated_at`.
   Taucht waehrend einer Umwandlung eine neue Quellversion auf, wird der Eintrag wieder `queued` mit der neuen Version;
   das Ergebnis des laufenden Arbeiters greift nur, solange die Version noch zu ihm passt. So wird die neue Fassung
   danach erneut umgewandelt, obwohl die gerade hochgeladene Variante juenger ist als das neue Original.
+- **Leeres Original:** Ein Objekt mit 0 Byte verbucht der Arbeiter sofort als `failed` mit `source object is empty
+  (0 bytes)` und `state.MaxAttempts` Versuchen (`state.MarkGivenUp`), ohne Download und ohne vips/ffmpeg; erst eine
+  neue Quellversion plant es wieder ein. Anlass war in Produktion ein 0-Byte-JPEG, das vips mit `is not a known file
+  format` ablehnte.
 - **Start:** `state.Open` setzt jeden `running`-Eintrag auf `queued`, weil beim Start nichts laufen kann.
 - Zeitpunkte liegen als Unix-Nanosekunden in `INTEGER`-Spalten, die Dauer in Millisekunden.
 
@@ -112,6 +119,13 @@ Eine YAML-Datei, Pfad per `-config` (Default `/config/s3-webx.yaml`); Beispiel m
   `access_key` und `secret_key` Pflicht, Intervalle > 0, `max_edge` und `max_height` > 0, `quality` 1–100, `crf`
   0–63, `audio_bitrate` der Form `96k`, `cache_control` nicht leer, nur bekannte Formate (Bilder `jpg`, `jpeg`, `png`,
   `gif`, `tif`, `tiff`; Videos `mp4`, `mov`, `m4v`, `mkv`, `avi`).
+- **Immer eine Variante** (Entscheidung des Users, 2026-10-29): `keep_if_larger` steht per Default auf `true`. Fuer
+  die konfigurierten Buckets entsteht so zu jedem Original eine `.webp` bzw. `.webm`, auch wenn sie groesser ist —
+  die Webseite soll ohne Nachfrage beim Dienst `.webp`/`.webm` verlinken koennen. `false` bleibt je Bucket oder in
+  `defaults` moeglich und behaelt das fruehere Verhalten fuer fremde Nutzer des oeffentlichen Images.
+- **Alte `skipped`-Eintraege:** Eintraege, die vor der Umstellung als `skipped` verbucht wurden, plant `Decide` bei
+  `keep_if_larger: true` beim naechsten Scan erneut ein (`Enqueue` setzt sie auf `queued`); sie bekommen ihre Variante
+  ohne Eingriff in `state.db`. Bei `false` bleiben sie liegen wie bisher.
 - `auth` (`ui_user`, `ui_password`, `api_token`) und `listen` nutzt die HTTP-Schicht (siehe dort).
 - **Endpoint:** mit Schema (`https://…`, `http://minio:9000`); ohne Schema gilt `https`. `path_style: true` schaltet
   minio-go auf Pfad-Adressierung (MinIO, Hetzner), sonst virtuelle Hosts (R2, AWS).
@@ -177,7 +191,7 @@ Gemessen am 2026-10-29 (ffmpeg 5.1.9) an erzeugten Testvideos (`testsrc2`, H.264
 | 1440×2560 `.mov`, 3 s, ohne Ton | 4.243.673 B | VP9 1080×1920, 1.780.001 B |
 | 1920×1080 mit Rotation 90° | — | VP9 1080×1920 (aufrecht) |
 | 641×361 `.m4v`, yuv444p | 297.686 B | VP9 640×360, 257.532 B |
-| 1920×1080, 3 s, ohne Ton | 2.401.091 B | 2.405.842 B — nicht kleiner, wird `skipped` |
+| 1920×1080, 3 s, ohne Ton | 2.401.091 B | 2.405.842 B — nicht kleiner, `skipped` nur bei `keep_if_larger: false` |
 
 ## HTTP-Schicht
 
@@ -189,7 +203,8 @@ Arbeiter wartet. Zeitgrenzen: `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `Writ
 | Endpunkt | Zugang | Inhalt |
 |---|---|---|
 | `GET /healthz` | offen | `200 ok`, wenn `state.db` antwortet (`state.DB.Ping`, 2 s Frist), sonst `503` |
-| `GET /` | Basic | HTML-Uebersicht aus `overview.html` (per `embed`), `<meta http-equiv="refresh" content="10">` |
+| `GET /` | Basic | HTML-Uebersicht aus `overview.html` (per `embed`), `<meta http-equiv="refresh" content="10">`, `?recent=N&failures=M` |
+| `GET /assets/app.css` | Basic | Stylesheet der Uebersicht (per `embed`), `text/css`, ein Jahr Cache |
 | `GET /api/status` | Bearer | je Arbeiter laufende Datei oder `idle`, je Bucket Zaehler, letzter Scan, Bytes |
 | `GET /api/buckets/{name}/files` | Bearer | Eintraege eines Buckets, Filter `status`, `kind`, `limit`, `offset`, mit `total` |
 | `GET /api/buckets/{name}/files/{key...}` | Bearer | eine Datei mit `variantKey` und `variantAvailable` |
@@ -214,11 +229,27 @@ Arbeiter wartet. Zeitgrenzen: `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `Writ
 - **Schluessel im Pfad:** `{key...}` nimmt den Rest des Pfads mit allen `/`. Der Client kodiert jedes Segment
   (`Foto%201.JPG`, `%23` fuer `#`, `%3F` fuer `?`). `ServeMux` bereinigt Pfade mit `//`, `.` oder `..` per Umleitung;
   ein Schluessel mit solchen Segmenten ist ueber diesen Endpunkt nicht erreichbar.
-- **Uebersicht:** serverseitig gerendert, kein JavaScript, `Content-Security-Policy: default-src 'none';
-  style-src 'unsafe-inline'; frame-ancestors 'none'`. Hell und dunkel ueber `prefers-color-scheme`, Tabellen in
-  waagerecht scrollbaren Rahmen, damit die Seite am Telefon nicht ueberlaeuft. Zeigt je Arbeiter Datei, Laufzeit und
-  bei Video Prozent mit Balken, je Bucket Warteschlange, Zaehler je Art und Status, letzten Scan mit Fehler und
-  gesparte Bytes, dazu die letzten 25 Umwandlungen (`done`, `skipped`) und die letzten 25 Fehlschlaege mit Fehlertext.
+- **Uebersicht:** serverseitig gerendert, kein JavaScript, im Stil der Kontingent-Ansicht von `bis-status-page`
+  (Entwurf: Workspace-Vault `vault/artifacts/2026-10-29-s3-webx-overview-statuspage-stil/`), hoechstens 1456 px breit.
+  Von oben: Kopf mit Zustand `Converting`/`Idle`, Karte „Storage saved“ ueber alle Buckets mit Balken Originale und
+  Varianten, Kacheln Queued/Done/Skipped/Failed, je Arbeiter eine Karte (Datei, Laufzeit, bei Video Prozent mit
+  Balken), je Bucket eine Karte mit letztem Scan, Scanfehler, Bytes und Tabelle „Jobs by kind“ (ab zwei Buckets
+  zweispaltig ab 1024 px), dann „Recent conversions“ (`done`, `skipped`) und „Failures“. Hell und dunkel ueber
+  `prefers-color-scheme`. Unter 720 px wird jede Tabellenzeile ein Block mit Beschriftung aus `data-label`, nichts
+  scrollt waagerecht. Status steht immer als Wort neben Farbe und Symbol.
+- **Blaettern:** beide Tabellen je 25 Zeilen, `?recent=N&failures=M`. `state.DB.List` liefert die Gesamtzahl; eine
+  nicht lesbare oder zu kleine Zahl ist Seite 1, eine zu grosse die letzte Seite (dann zweite Abfrage), nie ein Fehler.
+  Die Links „Newer“/„Older“ tragen die Seite der anderen Tabelle mit und springen per `#recent`/`#failures` zur Karte;
+  hat eine Tabelle nur eine Seite, entfaellt ihre Leiste.
+- **CSS und CSP:** `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:;
+  frame-ancestors 'none'` — kein `unsafe-inline`, die Seite traegt kein `style=`. Die Balken sind deshalb
+  `<progress>`-Elemente mit Wert (Variante gekappt auf 0–100), gefaerbt ueber `::-webkit-progress-value` und
+  `::-moz-progress-bar`. Das Stylesheet erzeugt das Tailwind-CSS-Standalone-CLI v4.3.3 aus `internal/web/tailwind.css`
+  (Tokens der Status-Page als CSS-Variablen, `@theme inline`, Komponentenklassen) und scannt nur `overview.html`
+  (`source(none)` + `@source`). Das Binary bettet `app.css` per `embed` ein; der Link traegt die ersten 12 Hex-Stellen
+  des SHA-256 (`?v=`), deshalb darf der Browser ein Jahr cachen.
+  Die Spalte „Change“ der Umwandlungen zeigt `(OutputSize - SourceSize) / SourceSize * 100` mit einer Nachkommastelle:
+  kleiner gruen (`−94.0 %`), groesser rot (`+0.2 %`), gerundet gleich grau (`±0.0 %`), bei Originalgroesse 0 `–`.
 
 Gemessen am 2026-10-29 im Devcontainer, Dienst mit einem Bucket gegen `http://127.0.0.1:1` (nicht erreichbar):
 
@@ -237,6 +268,7 @@ Gemessen am 2026-10-29 im Devcontainer, Dienst mit einem Bucket gegen `http://12
 
 ```
 Dockerfile
+  css     debian:13.7-slim + Tailwind-CLI v4.3.3 (ADD --checksum sha256:dc61b3ac…)  ──▶ app.css (--minify)
   build   golang:1.26.8-alpine3.24 + vips-tools + ffmpeg
           go vet ──▶ go test -v (Abbruch bei FAIL oder SKIP) ──▶ go build (statisch, -trimpath, -s -w, main.version)
           ──▶ Lizenztexte sammeln (LICENSE, Go, alle gelinkten Module) nach /out/licenses
@@ -244,6 +276,10 @@ Dockerfile
           /usr/local/bin/s3-webx · /usr/share/licenses/s3-webx · USER 10001 · VOLUME /data · EXPOSE 8080 · HEALTHCHECK wget /healthz
 ```
 
+- **Stylesheet:** Der Stage `css` laedt `tailwindcss-linux-x64` per `ADD --checksum` mit der SHA-256 aus dem
+  GitHub-Release und erzeugt `app.css`; der Build-Stage kopiert sie nach `internal/web/` vor `go vet` und `go test`.
+  Lokal macht `./dev css` dasselbe im Devcontainer (Binary nach `bin/tailwindcss-v4.3.3`, Pruefung per `sha256sum -c`);
+  `build`, `test` und `lint` rufen es, wenn `app.css` fehlt oder aelter ist als `tailwind.css` oder `overview.html`.
 - **Tests im Build:** `go test` laeuft im Build-Stage mit denselben `vips`- und `ffmpeg`-Paketen, die auch im
   Laufzeit-Image stehen. Die Konverter-Tests ueberspringen sich ohne die Werkzeuge (`t.Skipf`); der Build bricht
   deshalb auch bei einem `--- SKIP` ab, sonst koennte ein fehlendes Paket unbemerkt durchrutschen.
@@ -305,6 +341,10 @@ Content-Buckets selbst blieben unberuehrt. Der Bucket `s3-webx-test` mit den Erg
   `Cache-Control`, die Varianten deshalb auch keines.
 - **Zweiter Durchlauf:** Die Scans nach dem Ende meldeten `images 0, videos 0`; auch nach einem Neustart des
   Containers (Zustand im Volume) wurde nichts neu umgewandelt. Der `HEALTHCHECK` meldete danach `healthy`.
+- **Neue Uebersicht:** Nach dem Redesign lief das Image als `s3-webx-ui-check` gegen denselben Bucket, nachdem dessen
+  Varianten entfernt waren. Headless Chromium (Playwright) bei 390 und 1280 px, hell und dunkel: keine CSP-Meldung in
+  der Konsole, `scrollWidth` gleich der Fensterbreite, Bild wie der Entwurf. Ein hochgeladenes 0-Byte-JPEG erschien
+  sofort unter „Failures“ mit `source object is empty (0 bytes)` und 3 Versuchen.
 - **Folgerung fuer die Webseite:** Die Leiste „In 10 Schritten montiert“ schrumpft von rund 38 MB auf 2,4 MB. Das GIF
   bringt als WebP wenig; ein Video (WebM/MP4 als `<video>`) waere fuer diese Animation die bessere Form.
 
@@ -337,6 +377,13 @@ Content-Buckets selbst blieben unberuehrt. Der Bucket `s3-webx-test` mit den Erg
 | Unbekannte Pfade unter `/api/` | erst Token, dann `404` | ohne Token laesst sich die API nicht abtasten |
 | Port binden | vor Scannern und Arbeitern | belegter Port beendet den Start, statt halb zu laufen |
 | Kopfzeilen der Uebersicht | CSP ohne Skripte, `no-store`, `nosniff`, `no-referrer` | Seite enthaelt Schluessel aus fremden Buckets |
+| `app.css` im Repo | nicht committet (`.gitignore`), erzeugt von `./dev` und Dockerfile | kein generierter Diff im Review; das Image baut sie immer frisch, also kann keine veraltete Datei ausgeliefert werden |
+| Tailwind-Binary | glibc-`linux-x64` in einem Debian-Stage statt `-musl` im Alpine-Stage | ein Binary und eine Pruefsumme fuer Dockerfile und Devcontainer (Debian bookworm) |
+| Schutz von `/assets/app.css` | Basic wie `/` | der Browser schickt die Zugangsdaten fuer denselben Host ohnehin mit; keine offene Flaeche ausser `/healthz` |
+| Cache des Stylesheets | `private, max-age=31536000, immutable` mit Hash im Link | Antwort auf eine authentifizierte Anfrage gehoert in keinen geteilten Cache |
+| Balken ohne Inline-Stil | `<progress>` | semantisch und barrierearm, haelt die CSP ohne `unsafe-inline`; Breitenklassen in 1-%-Schritten waeren 101 Klassen |
+| Seitenzahl ausserhalb | Seite 1 bzw. letzte Seite | Links aus einer aelteren Ansicht fuehren nie ins Leere |
+| Leeres Original | sofort `failed` mit `MaxAttempts` | Download und Konverter koennen bei 0 Byte nichts liefern; drei gleiche Fehler waeren Rauschen |
 | Laufzeit-Basis | `alpine:3.24.1` mit Distributionspaketen | vips und FFmpeg mit VP9/Opus fertig gebaut; kleiner als Debian, ohne eigenen Codec-Build |
 | Uebersprungene Tests im Build | Abbruch | ein fehlendes `vips` oder `ffmpeg` im Build-Stage faellt sonst nicht auf |
 | Benutzer | UID/GID 10001, ohne Login-Shell und Home | fester Wert fuer Bind-Mounts, keine Kollision mit System-Benutzern |

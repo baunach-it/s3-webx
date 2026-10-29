@@ -31,6 +31,9 @@ type Converter interface {
 	) error
 }
 
+// An empty object cannot be decoded, and retrying the same version would fail the same way.
+var errEmptySource = errors.New("source object is empty (0 bytes)")
+
 type Progress struct {
 	Bucket  string
 	Key     string
@@ -155,6 +158,9 @@ func (w *Worker) ProcessNext(ctx context.Context) (bool, error) {
 	case convErr != nil && ctx.Err() != nil:
 		result = state.Queued
 		err = w.state.Requeue(writeCtx, entry)
+	case errors.Is(convErr, errEmptySource):
+		result = state.Failed
+		err = w.state.MarkGivenUp(writeCtx, entry, convErr, duration)
 	case convErr != nil:
 		result = state.Failed
 		err = w.state.MarkFailed(writeCtx, entry, convErr, duration)
@@ -185,6 +191,9 @@ func (w *Worker) process(
 	target Target,
 	entry state.Entry,
 ) (bool, int64, error) {
+	if entry.SourceSize == 0 {
+		return false, 0, errEmptySource
+	}
 	if err := os.MkdirAll(w.workDir, 0o755); err != nil {
 		return false, 0, err
 	}

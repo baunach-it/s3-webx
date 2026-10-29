@@ -61,9 +61,15 @@ func VariantKey(key string, kind state.Kind) string {
 }
 
 // Decide is nil-tolerant: variant is nil when it does not exist, entry when state.db has no record.
-func Decide(source store.Object, variant *store.Object, entry *state.Entry) bool {
+// With keepIfLarger a skipped entry is planned again, so sources skipped under the old setting get their variant.
+func Decide(
+	source store.Object,
+	variant *store.Object,
+	entry *state.Entry,
+	keepIfLarger bool,
+) bool {
 	if entry != nil && entry.SameSource(source.LastModified, source.Size) {
-		if entry.Status == state.Skipped {
+		if entry.Status == state.Skipped && !keepIfLarger {
 			return false
 		}
 		if entry.Status == state.Failed && entry.Attempts >= state.MaxAttempts {
@@ -162,7 +168,12 @@ func (s *Scanner) Scan(ctx context.Context) (map[state.Kind]int, error) {
 		if e, ok := entries[source.Key]; ok {
 			entry = &e
 		}
-		if !Decide(source, variant, entry) {
+		if !Decide(
+			source,
+			variant,
+			entry,
+			bucket.KeepIfLarger,
+		) {
 			continue
 		}
 		if err := s.State.Enqueue(

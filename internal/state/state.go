@@ -267,6 +267,16 @@ func (d *DB) MarkFailed(
 	return d.finish(ctx, e, `status = 'failed', attempts = attempts + 1, error = ?, duration_ms = ?`, cause.Error(), duration.Milliseconds())
 }
 
+// MarkGivenUp fails an entry without retries; only a new source version queues it again.
+func (d *DB) MarkGivenUp(
+	ctx context.Context,
+	e Entry,
+	cause error,
+	duration time.Duration,
+) error {
+	return d.finish(ctx, e, `status = 'failed', attempts = ?, error = ?, duration_ms = ?`, MaxAttempts, cause.Error(), duration.Milliseconds())
+}
+
 func (d *DB) Requeue(ctx context.Context, e Entry) error {
 	return d.finish(ctx, e, `status = 'queued'`)
 }
