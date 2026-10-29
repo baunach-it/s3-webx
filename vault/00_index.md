@@ -12,7 +12,7 @@ jedes Bild eine WebP-Fassung (`foto.jpg.webp`) und neben jedes Video eine WebM-F
 
 ## Inhalt
 
-- `concepts/` — Funktionsweise des Dienstes (TBD)
+- `concepts/funktionsweise.md` — Ablauf, Zustandsmodell, Benennung, vips- und ffmpeg-Kommandos, Entscheidungen
 - `decisions/` — Repo-spezifische Entscheidungen (TBD)
 - `playbooks/` — Betrieb und Erprobung (TBD)
 - `troubleshooting/` — Fehlerbilder bei Umwandlung und Upload (TBD)

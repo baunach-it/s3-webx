@@ -1,0 +1,7 @@
+*
+!go.mod
+!go.sum
+!config.example.yaml
+!cmd/
+!internal/
+!LICENSE

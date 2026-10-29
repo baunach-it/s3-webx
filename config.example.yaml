@@ -1,0 +1,48 @@
+# s3-webx configuration. Secrets are written as environment references and resolved at startup;
+# an unset variable stops the service. Unknown keys are an error.
+
+listen: ":8080"
+state: /data/state.db
+interval: 15m
+
+auth:
+  ui_user: admin
+  ui_password: ${S3WEBX_UI_PASSWORD}
+  api_token: ${S3WEBX_API_TOKEN}
+
+# Applies to every bucket; a bucket may override single fields.
+defaults:
+  image:
+    formats: [jpg, jpeg, png, gif]
+    max_edge: 1600
+    quality: 80
+  video:
+    enabled: true
+    formats: [mp4, mov, m4v]
+    max_height: 1080
+    crf: 33
+    audio_bitrate: 96k
+  keep_if_larger: false
+  # "inherit" copies Cache-Control from the original; any other value is set as is.
+  cache_control: inherit
+
+buckets:
+  - name: content
+    endpoint: https://ACCOUNT_ID.r2.cloudflarestorage.com
+    region: auto
+    bucket: content
+    prefix: ""
+    path_style: false
+    access_key: ${S3WEBX_CONTENT_ACCESS_KEY}
+    secret_key: ${S3WEBX_CONTENT_SECRET_KEY}
+
+  - name: content-failover
+    endpoint: https://fsn1.your-objectstorage.com
+    region: fsn1
+    bucket: content-failover
+    path_style: true
+    access_key: ${S3WEBX_FAILOVER_ACCESS_KEY}
+    secret_key: ${S3WEBX_FAILOVER_SECRET_KEY}
+    interval: 1h
+    video:
+      enabled: false

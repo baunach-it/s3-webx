@@ -1,0 +1,31 @@
+{
+  // Devcontainer-Sicherheitsmodell: keine Credentials im Image, kein SSH-Agent-Forwarding, keine Cred-Mounts.
+  "name": "s3-webx",
+
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  "containerEnv": {
+    "DEVCONTAINER": "true"
+  },
+
+  // Fester Container-Name (`devcontainer-<basename>`), damit `./dev down` ihn findet.
+  "runArgs": ["--name", "devcontainer-${localWorkspaceFolderBasename}"],
+
+  // Modul- und Build-Cache ueberleben Container-Rebuilds.
+  "mounts": [
+    "source=devcontainer-${localWorkspaceFolderBasename}-gomodcache,target=/go/pkg/mod,type=volume",
+    "source=devcontainer-${localWorkspaceFolderBasename}-gocache,target=/home/vscode/.cache/go-build,type=volume"
+  ],
+
+  "postCreateCommand": ".devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go"
+      ]
+    }
+  }
+}

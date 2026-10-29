@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONTAINER="devcontainer-$(basename "$SCRIPT_DIR")"
+
+in_env() {
+    [ "${DEVCONTAINER:-}" = "true" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]
+}
+
+run_in_env() {
+    if in_env; then
+        "$@"
+    else
+        # `up` is idempotent: starts the container on first use, reuses it afterwards.
+        local log
+        if ! log=$(devcontainer up --workspace-folder "$SCRIPT_DIR" 2>&1); then
+            echo "$log" >&2
+            exit 1
+        fi
+        devcontainer exec --workspace-folder "$SCRIPT_DIR" "$@"
+    fi
+}
+
+usage() {
+    cat <<USAGE
+s3-webx developer commands
+
+Usage: ./dev <command>
+
+  build      go build -o bin/s3-webx ./cmd/s3-webx
+  test       go test ./...
+  lint       go vet ./... and gofmt -l (fails on unformatted files)
+  tidy       go mod tidy
+  image      docker build -t baunach/s3-webx:local . (runs vet and tests in the build stage)
+  down       stop and remove this repo's devcontainer (volumes stay)
+USAGE
+}
+
+case "${1:-}" in
+    build)
+        run_in_env go build -o bin/s3-webx ./cmd/s3-webx
+        ;;
+    test)
+        run_in_env go test ./...
+        ;;
+    lint)
+        run_in_env go vet ./...
+        run_in_env sh -c 'out=$(gofmt -l .); if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi'
+        ;;
+    tidy)
+        run_in_env go mod tidy
+        ;;
+    image)
+        docker build --build-arg VERSION="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo dev)" \
+            -t baunach/s3-webx:local "$SCRIPT_DIR"
+        ;;
+    down)
+        if in_env; then
+            echo "down: nothing to do inside a container or in CI."
+            exit 0
+        fi
+        if docker stop "$CONTAINER" >/dev/null 2>&1; then
+            docker rm "$CONTAINER" >/dev/null 2>&1 || true
+            echo "Stopped and removed $CONTAINER."
+        else
+            echo "$CONTAINER is not running."
+        fi
+        ;;
+    *)
+        usage
+        ;;
+esac

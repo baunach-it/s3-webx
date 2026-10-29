@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<meta name="color-scheme" content="light dark">
+<title>s3-webx</title>
+<style>
+  :root {
+    --bg: #fafafa; --fg: #1d1d1f; --muted: #6b6b70; --line: #dedee3; --card: #ffffff;
+    --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; --bar: #0969da;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111214; --fg: #e8e8ea; --muted: #9a9aa2; --line: #2e2f33; --card: #1a1b1e;
+      --ok: #3fb950; --warn: #d29922; --bad: #f85149; --bar: #4493f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 24px 0 8px; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+  .card h3 { font-size: 14px; margin: 0 0 6px; }
+  .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .bar span { display: block; height: 100%; background: var(--bar); }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .done { color: var(--ok); } .skipped { color: var(--warn); } .failed { color: var(--bad); }
+  .error { color: var(--bad); overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+<h1>s3-webx</h1>
+<p class="muted">{{time .Now}} · refreshes every 10 s</p>
+
+<h2>Workers</h2>
+<div class="grid">
+{{- range .Workers}}
+  <div class="card">
+    <h3>{{.Kind}}</h3>
+    {{- if .Idle}}
+    <p class="muted">idle</p>
+    {{- else}}
+    <div>{{.Bucket}}</div>
+    <div class="key">{{.Key}}</div>
+    <div class="muted">running for {{duration .Running}}{{if .Percent}} · {{percent .Percent}}{{end}}</div>
+    {{- if .Percent}}
+    <div class="bar"><span style="width: {{width .Percent}}%"></span></div>
+    {{- end}}
+    {{- end}}
+  </div>
+{{- end}}
+</div>
+
+<h2>Buckets</h2>
+<div class="grid">
+{{- range .Buckets}}
+  {{- $b := .}}
+  <div class="card">
+    <h3>{{.Name}}</h3>
+    <div class="muted">
+      last scan: {{if .LastScan}}{{time .LastScan}}{{else}}not yet{{end}}
+    </div>
+    {{- if .LastScanError}}
+    <div class="error">{{.LastScanError}}</div>
+    {{- end}}
+    <div>queued: {{.Queued}} · saved: {{bytes .BytesSaved}} ({{bytes .BytesBefore}} → {{bytes .BytesAfter}})</div>
+    <div class="scroll">
+    <table>
+      <tr><th></th>{{range $.Statuses}}<th class="num">{{.}}</th>{{end}}</tr>
+      {{- range $kind := $.Kinds}}
+      <tr><td>{{$kind}}</td>{{range $st := $.Statuses}}<td class="num">{{index (index $b.Counts $kind) $st}}</td>{{end}}</tr>
+      {{- end}}
+    </table>
+    </div>
+  </div>
+{{- else}}
+  <p class="muted">No buckets configured.</p>
+{{- end}}
+</div>
+
+<h2>Recent conversions</h2>
+{{- if .Recent}}
+<div class="scroll">
+<table>
+  <tr><th>Path</th><th>Kind</th><th>Status</th><th class="num">Before</th><th class="num">After</th><th class="num">Duration</th></tr>
+  {{- range .Recent}}
+  <tr>
+    <td><span class="muted">{{.Bucket}}/</span><span class="key">{{.Key}}</span></td>
+    <td>{{.Kind}}</td>
+    <td class="{{.Status}}">{{.Status}}</td>
+    <td class="num">{{bytes .SourceSize}}</td>
+    <td class="num">{{bytes .OutputSize}}</td>
+    <td class="num">{{duration .Duration}}</td>
+  </tr>
+  {{- end}}
+</table>
+</div>
+{{- else}}
+<p class="muted">None yet.</p>
+{{- end}}
+
+<h2>Failures</h2>
+{{- if .Failures}}
+<div class="scroll">
+<table>
+  <tr><th>Path</th><th>Kind</th><th class="num">Attempts</th><th>Error</th><th>When</th></tr>
+  {{- range .Failures}}
+  <tr>
+    <td><span class="muted">{{.Bucket}}/</span><span class="key">{{.Key}}</span></td>
+    <td>{{.Kind}}</td>
+    <td class="num">{{.Attempts}}</td>
+    <td class="error">{{.Error}}</td>
+    <td class="num">{{time .UpdatedAt}}</td>
+  </tr>
+  {{- end}}
+</table>
+</div>
+{{- else}}
+<p class="muted">None.</p>
+{{- end}}
+</main>
+</body>
+</html>
