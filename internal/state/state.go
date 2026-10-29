@@ -98,6 +98,23 @@ func Open(path string) (*DB, error) {
 	return &DB{db: db, now: time.Now}, nil
 }
 
+// Prune drops the entries of buckets that are no longer configured; their objects stay untouched.
+func (d *DB) Prune(ctx context.Context, buckets []string) (int64, error) {
+	query := `DELETE FROM entries`
+	var args []any
+	if len(buckets) > 0 {
+		query += ` WHERE bucket NOT IN (?` + strings.Repeat(", ?", len(buckets)-1) + `)`
+		for _, b := range buckets {
+			args = append(args, b)
+		}
+	}
+	res, err := d.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("prune entries: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 func (d *DB) Close() error {
 	return d.db.Close()
 }
@@ -195,6 +212,39 @@ func (d *DB) Enqueue(
 		return fmt.Errorf("enqueue %s/%s: %w", bucket, key, err)
 	}
 	return nil
+}
+
+// Adopt records a variant that is already in the bucket as done and never touches an existing entry.
+// Both timestamps are the variant's, so the overview lists it at the time it was made.
+func (d *DB) Adopt(
+	ctx context.Context,
+	bucket string,
+	key string,
+	kind Kind,
+	modified time.Time,
+	size int64,
+	variantModified time.Time,
+	variantSize int64,
+) (bool, error) {
+	at := variantModified.UnixNano()
+	res, err := d.db.ExecContext(ctx, `
+		INSERT INTO entries (bucket, key, kind, status, source_modified, source_size, output_size, queued_at, updated_at)
+		VALUES (?, ?, ?, 'done', ?, ?, ?, ?, ?)
+		ON CONFLICT (bucket, key) DO NOTHING`,
+		bucket,
+		key,
+		kind,
+		modified.UnixNano(),
+		size,
+		variantSize,
+		at,
+		at,
+	)
+	if err != nil {
+		return false, fmt.Errorf("adopt %s/%s: %w", bucket, key, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // Claim takes the longest-waiting queued entry of a kind among the given buckets and marks it running.

@@ -73,6 +73,11 @@ service. All keys with their defaults: [`config.example.yaml`](config.example.ya
 original. Set it to `false` to keep only variants that save bytes; such files end as `skipped`. While it is `true`, a
 file once skipped is converted again on the next scan.
 
+`state.db` follows the buckets. At startup the service drops the entries of buckets that are no longer configured;
+their objects stay untouched. A scan records a variant that is already in the bucket and not older than its original
+as `done` when `state.db` has no entry for that original, for example after the volume was replaced. Such an entry
+carries the size and time of the variant and a duration of 0.
+
 ## HTTP
 
 The service listens on `listen` (default `:8080`).

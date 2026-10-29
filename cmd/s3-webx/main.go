@@ -61,6 +61,17 @@ func run(logger *slog.Logger) error {
 	}
 	defer db.Close()
 	logger.Info("state opened", "path", cfg.State, "work_dir", cfg.WorkDir())
+	configured := make([]string, 0, len(cfg.Buckets))
+	for _, b := range cfg.Buckets {
+		configured = append(configured, b.Name)
+	}
+	pruned, err := db.Prune(context.Background(), configured)
+	if err != nil {
+		return err
+	}
+	if pruned > 0 {
+		logger.Info("state pruned", "entries", pruned)
+	}
 
 	var targets []worker.Target
 	for _, b := range cfg.Buckets {

@@ -288,13 +288,13 @@ func TestEmptySourceFailsAtOnceUntilANewVersion(t *testing.T) {
 	}
 
 	scanner := &Scanner{Target: Target{Config: f.bucket, Store: f.store}, State: f.db, Logger: logger}
-	if queued, err := scanner.Scan(ctx); err != nil || queued[state.Image] != 0 {
+	if queued, _, err := scanner.Scan(ctx); err != nil || queued[state.Image] != 0 {
 		t.Errorf("same version rescanned: queued %v err %v", queued, err)
 	}
 
 	f.store.objects = nil
 	f.store.givenObject("leer.jpg", 2048, t0.Add(time.Hour))
-	if queued, err := scanner.Scan(ctx); err != nil || queued[state.Image] != 1 {
+	if queued, _, err := scanner.Scan(ctx); err != nil || queued[state.Image] != 1 {
 		t.Errorf("new version: queued %v err %v", queued, err)
 	}
 	if e := entry(t, f.db, "content", "leer.jpg"); e.Status != state.Queued || e.Attempts != 0 {

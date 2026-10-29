@@ -148,6 +148,52 @@ func TestOpenResetsRunningEntries(t *testing.T) {
 	}
 }
 
+func TestPruneDropsEntriesOfUnconfiguredBuckets(t *testing.T) {
+	db := openTemp(t)
+	db.Enqueue(ctx, "a", "1.jpg", Image, t0, 1)
+	db.Enqueue(ctx, "b", "2.jpg", Image, t0, 1)
+	db.Enqueue(ctx, "old", "3.jpg", Image, t0, 1)
+	db.Enqueue(ctx, "old", "4.mp4", Video, t0, 1)
+
+	pruned, err := db.Prune(ctx, []string{"a", "b"})
+
+	if err != nil || pruned != 2 {
+		t.Fatalf("pruned %d err %v", pruned, err)
+	}
+	if left, _ := db.BucketEntries(ctx, "old"); len(left) != 0 {
+		t.Errorf("entries of removed bucket left: %+v", left)
+	}
+	mustGet(t, db, "a", "1.jpg")
+	mustGet(t, db, "b", "2.jpg")
+	if pruned, err := db.Prune(ctx, []string{"a", "b"}); err != nil || pruned != 0 {
+		t.Errorf("second prune: %d %v", pruned, err)
+	}
+}
+
+func TestAdoptNeverOverwritesAnEntry(t *testing.T) {
+	db := openTemp(t)
+	db.Enqueue(ctx, "a", "x.jpg", Image, t0, 1000)
+	before := mustGet(t, db, "a", "x.jpg")
+
+	adopted, err := db.Adopt(
+		ctx,
+		"a",
+		"x.jpg",
+		Image,
+		t0,
+		1000,
+		t0.Add(time.Hour),
+		100,
+	)
+
+	if err != nil || adopted {
+		t.Fatalf("adopted %v err %v", adopted, err)
+	}
+	if got := mustGet(t, db, "a", "x.jpg"); got != before {
+		t.Errorf("entry changed: %+v", got)
+	}
+}
+
 func TestCountsAndList(t *testing.T) {
 	db := openTemp(t)
 	db.Enqueue(ctx, "a", "1.jpg", Image, t0, 1)

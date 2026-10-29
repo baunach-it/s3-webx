@@ -41,7 +41,9 @@ Scanner je Bucket (alle `interval`)            Arbeiter image / video (je einer,
 
 - **Scan:** Je Bucket laeuft eine Schleife, die sofort beim Start und danach im Intervall des Buckets (`interval`,
   sonst das globale) alle Objekte unter `prefix` listet. Fuer jedes Original entscheidet `Decide`, ob es umgewandelt
-  werden muss; Kandidaten traegt der Scanner als `queued` in `state.db` ein und weckt den passenden Arbeiter.
+  werden muss; Kandidaten traegt der Scanner als `queued` in `state.db` ein und weckt den passenden Arbeiter. Ein
+  Original ohne Eintrag, dessen Variante schon aktuell im Bucket liegt, uebernimmt der Scanner als `done` (siehe
+  Zustandsmodell, „Uebernahme").
 - **Arbeiter:** Es gibt genau zwei, `image` und `video`, unabhaengig von der Zahl der Buckets. Jeder nimmt seine Art
   nacheinander ueber alle Buckets ab, und zwar den am laengsten wartenden Eintrag zuerst (`queued_at`, bei Gleichstand
   das aeltere Original). Ein langes Video haelt so keine Bilder auf. Ohne Arbeit wartet ein Arbeiter, bis ein Scanner
@@ -60,7 +62,8 @@ Scanner je Bucket (alle `interval`)            Arbeiter image / video (je einer,
   dabei beendet; der laufende Eintrag geht zurueck auf `queued`, ohne einen Versuch zu zaehlen. Der Dienst wartet, bis
   Scanner und Arbeiter zurueckgekehrt sind.
 - **Protokoll:** `log/slog` als JSON auf stdout. Je Datei eine Zeile `file` mit `bucket`, `key`, `kind`, `result`,
-  `bytes_before`, `bytes_after`, `duration` und bei Fehlern `error`; je Scan eine Zeile `scan done`.
+  `bytes_before`, `bytes_after`, `duration` und bei Fehlern `error`; je Scan eine Zeile `scan done` mit den neu
+  eingeplanten Bildern und Videos und der Zahl der uebernommenen Varianten (`adopted`).
 
 ## Benennung
 
@@ -99,7 +102,17 @@ Dauer, `queued_at` und `updated_at`.
   (0 bytes)` und `state.MaxAttempts` Versuchen (`state.MarkGivenUp`), ohne Download und ohne vips/ffmpeg; erst eine
   neue Quellversion plant es wieder ein. Anlass war in Produktion ein 0-Byte-JPEG, das vips mit `is not a known file
   format` ablehnte.
-- **Start:** `state.Open` setzt jeden `running`-Eintrag auf `queued`, weil beim Start nichts laufen kann.
+- **Uebernahme:** Kennt `state.db` ein Original nicht, liegt seine Variante aber schon im Bucket und ist nicht aelter
+  als das Original, lehnt `Decide` die Umwandlung ab, und der Scanner legt mit `state.Adopt` einen Eintrag `done` an:
+  Quellversion des Originals, Groesse der Variante, keine Versuche, Dauer 0, und als `queued_at` und `updated_at` das
+  LastModified der Variante, damit die Uebersicht sie zu ihrer echten Entstehungszeit einordnet und nicht als
+  juengste Arbeit. Ein vorhandener Eintrag wird nie ueberschrieben. Das geschieht in jedem Scan; nach einem Verlust
+  von `state.db` oder dem ersten Start mit einer neuen Datenbank holt also der erste Scan alle vorhandenen Varianten
+  nach, und Summen und Listen der Uebersicht stimmen wieder mit dem Bucket ueberein.
+- **Start:** `state.Open` setzt jeden `running`-Eintrag auf `queued`, weil beim Start nichts laufen kann. Danach
+  loescht `state.Prune` alle Eintraege von Buckets, die nicht mehr in der Konfiguration stehen, und protokolliert die
+  Zahl als `state pruned`, falls es welche gab. Die Objekte in S3 bleiben dabei unberuehrt; kommt der Bucket spaeter
+  zurueck, uebernimmt der erste Scan seine Varianten wieder.
 - Zeitpunkte liegen als Unix-Nanosekunden in `INTEGER`-Spalten, die Dauer in Millisekunden.
 
 ## Konfiguration

@@ -117,13 +117,13 @@ func TestScanQueuesCandidatesAndNotifiesWorkers(t *testing.T) {
 		Logger: logger,
 	}
 
-	queued, err := scanner.Scan(ctx)
+	queued, adopted, err := scanner.Scan(ctx)
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if queued[state.Image] != 2 || queued[state.Video] != 1 {
-		t.Errorf("queued: %v", queued)
+	if queued[state.Image] != 2 || queued[state.Video] != 1 || adopted != 1 {
+		t.Errorf("queued: %v, adopted: %d", queued, adopted)
 	}
 	slices.Sort(notified)
 	if !slices.Equal(notified, []state.Kind{state.Image, state.Video}) {
@@ -131,11 +131,52 @@ func TestScanQueuesCandidatesAndNotifiesWorkers(t *testing.T) {
 	}
 	entries, _ := db.BucketEntries(ctx, "content")
 	keys := slices.Sorted(maps.Keys(entries))
-	if !slices.Equal(keys, []string{"clip.mp4", "new.jpg", "skipped.gif", "stale.png"}) {
+	if !slices.Equal(keys, []string{"clip.mp4", "fresh.jpg", "new.jpg", "skipped.gif", "stale.png"}) {
 		t.Errorf("entries: %v", keys)
 	}
 	if entries["skipped.gif"].Status != state.Skipped {
 		t.Errorf("skipped entry requeued: %+v", entries["skipped.gif"])
+	}
+}
+
+func TestScanAdoptsCurrentVariantWithoutEntry(t *testing.T) {
+	db := openState(t)
+	s := newStoreDouble().
+		givenObject("fresh.jpg", 1000, t0).
+		givenObject("fresh.jpg.webp", 100, t0.Add(time.Minute)).
+		givenObject("stale.png", 1000, t0).
+		givenObject("stale.png.webp", 100, t0.Add(-time.Minute)).
+		givenObject("known.gif", 1000, t0).
+		givenObject("known.gif.webp", 1200, t0.Add(time.Minute))
+	db.Enqueue(ctx, "content", "known.gif", state.Image, t0, 1000)
+	claimed, _, _ := db.Claim(ctx, state.Image, []string{"content"})
+	db.MarkSkipped(ctx, claimed, 1200, time.Second)
+	known := entry(t, db, "content", "known.gif")
+	scanner := &Scanner{
+		Target: Target{Config: bucketConfig("content"), Store: s},
+		State:  db,
+		Logger: logger,
+	}
+
+	queued, adopted, err := scanner.Scan(ctx)
+
+	if err != nil || adopted != 1 || queued[state.Image] != 1 {
+		t.Fatalf("queued %v adopted %d err %v", queued, adopted, err)
+	}
+	fresh := entry(t, db, "content", "fresh.jpg")
+	if fresh.Status != state.Done || fresh.Kind != state.Image || fresh.SourceSize != 1000 || fresh.OutputSize != 100 ||
+		fresh.Attempts != 0 || fresh.Duration != 0 || !fresh.SourceModified.Equal(t0) ||
+		!fresh.QueuedAt.Equal(t0.Add(time.Minute)) || !fresh.UpdatedAt.Equal(t0.Add(time.Minute)) {
+		t.Errorf("adopted entry: %+v", fresh)
+	}
+	if e := entry(t, db, "content", "stale.png"); e.Status != state.Queued {
+		t.Errorf("older variant adopted: %+v", e)
+	}
+	if e := entry(t, db, "content", "known.gif"); e != known {
+		t.Errorf("existing entry changed: %+v", e)
+	}
+	if _, again, _ := scanner.Scan(ctx); again != 0 {
+		t.Errorf("adopted again: %d", again)
 	}
 }
 
@@ -152,7 +193,7 @@ func TestScanRequeuesSkippedWhenKeepIfLarger(t *testing.T) {
 		Logger: logger,
 	}
 
-	queued, err := scanner.Scan(ctx)
+	queued, _, err := scanner.Scan(ctx)
 
 	if err != nil || queued[state.Image] != 1 {
 		t.Fatalf("queued %v err %v", queued, err)
@@ -172,7 +213,7 @@ func TestScanWithVideoDisabledQueuesNoVideos(t *testing.T) {
 		Logger: logger,
 	}
 
-	queued, err := scanner.Scan(ctx)
+	queued, _, err := scanner.Scan(ctx)
 
 	if err != nil || queued[state.Video] != 0 {
 		t.Errorf("queued %v err %v", queued, err)

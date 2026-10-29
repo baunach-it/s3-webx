@@ -118,7 +118,7 @@ func (s *Scanner) Run(ctx context.Context) {
 
 func (s *Scanner) scanAndLog(ctx context.Context) {
 	started := time.Now()
-	queued, err := s.Scan(ctx)
+	queued, adopted, err := s.Scan(ctx)
 	// A scan cut short by shutdown says nothing about the bucket, so it is not recorded.
 	if ctx.Err() != nil {
 		return
@@ -135,26 +135,29 @@ func (s *Scanner) scanAndLog(ctx context.Context) {
 		"bucket", s.Target.Config.Name,
 		"images", queued[state.Image],
 		"videos", queued[state.Video],
+		"adopted", adopted,
 		"duration", time.Since(started).Round(time.Millisecond).String(),
 	)
 }
 
-// Scan returns how many originals per kind it found in need of conversion.
-func (s *Scanner) Scan(ctx context.Context) (map[state.Kind]int, error) {
+// Scan returns how many originals per kind it found in need of conversion and how many current
+// variants without an entry it adopted as done.
+func (s *Scanner) Scan(ctx context.Context) (map[state.Kind]int, int, error) {
 	bucket := s.Target.Config
 	objects, err := s.Target.Store.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	entries, err := s.State.BucketEntries(ctx, bucket.Name)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	byKey := make(map[string]store.Object, len(objects))
 	for _, o := range objects {
 		byKey[o.Key] = o
 	}
 	queued := map[state.Kind]int{}
+	adopted := 0
 	for _, source := range objects {
 		kind, ok := KindOf(source.Key, bucket)
 		if !ok {
@@ -174,6 +177,25 @@ func (s *Scanner) Scan(ctx context.Context) (map[state.Kind]int, error) {
 			entry,
 			bucket.KeepIfLarger,
 		) {
+			// Without an entry Decide only declines because the variant is current, e.g. after state.db was lost.
+			if entry == nil {
+				ok, err := s.State.Adopt(
+					ctx,
+					bucket.Name,
+					source.Key,
+					kind,
+					source.LastModified,
+					source.Size,
+					variant.LastModified,
+					variant.Size,
+				)
+				if err != nil {
+					return nil, 0, err
+				}
+				if ok {
+					adopted++
+				}
+			}
 			continue
 		}
 		if err := s.State.Enqueue(
@@ -184,7 +206,7 @@ func (s *Scanner) Scan(ctx context.Context) (map[state.Kind]int, error) {
 			source.LastModified,
 			source.Size,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		queued[kind]++
 	}
@@ -193,5 +215,5 @@ func (s *Scanner) Scan(ctx context.Context) (map[state.Kind]int, error) {
 			s.Notify(kind)
 		}
 	}
-	return queued, nil
+	return queued, adopted, nil
 }
