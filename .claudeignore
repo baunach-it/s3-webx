@@ -1,0 +1,15 @@
+# Environment
+.env
+
+# Git / CI
+.git/
+.gitea/
+.github/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Build
+/bin/

@@ -1,0 +1,9 @@
+# Auto-generierte Skill-Symlinks (workspace-skills.py)
+.claude/skills/
+
+# Lokale Credentials
+.env
+
+# Go-Artefakte und lokaler Zustand
+/bin/
+*.db
