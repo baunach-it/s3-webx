@@ -3,7 +3,8 @@
 
 listen: ":8080"
 state: /data/state.db
-interval: 15m
+# Timed scans only catch what nobody announces; POST /api/buckets/{name}/scan starts a scan at once.
+interval: 1h
 
 auth:
   ui_user: admin

@@ -183,3 +183,11 @@ func (a activity) LastScan(bucket string) (worker.ScanResult, bool) {
 	}
 	return worker.ScanResult{}, false
 }
+
+func (a activity) Scan(bucket string) bool {
+	s, ok := a.scanners[bucket]
+	if ok {
+		s.Wake()
+	}
+	return ok
+}

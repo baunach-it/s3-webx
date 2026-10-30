@@ -4,7 +4,7 @@ Docker image that keeps web-ready variants next to the images and videos in S3-c
 
 ## What it does
 
-- Walks one or more S3-compatible buckets (Cloudflare R2, MinIO, Hetzner, AWS) at a regular interval.
+- Walks one or more S3-compatible buckets (Cloudflare R2, MinIO, Hetzner, AWS) at a regular interval and whenever a client asks for a scan.
 - Converts every image to WebP and stores it next to the original with the extension appended:
   `foto.jpg` → `foto.jpg.webp`. GIFs become animated WebP.
 - Converts every video to WebM (VP9 + Opus): `film.mp4` → `film.mp4.webm`.
@@ -90,6 +90,7 @@ The service listens on `listen` (default `:8080`).
 | `GET /api/status` | Bearer (`auth.api_token`) | workers and per-bucket counters |
 | `GET /api/buckets/{name}/files` | Bearer | entries of one bucket, newest first |
 | `GET /api/buckets/{name}/files/{key}` | Bearer | state of one original, incl. whether its variant exists |
+| `POST /api/buckets/{name}/scan` | Bearer | starts a scan of the bucket now, answers `202` |
 
 - A missing or wrong credential gets `401` with a `WWW-Authenticate` challenge (`Basic realm="s3-webx"` or
   `Bearer realm="s3-webx"`). An empty `ui_user`/`ui_password` or `api_token` disables that access with `403`; it is
@@ -98,6 +99,9 @@ The service listens on `listen` (default `:8080`).
   invalid parameter `400`.
 - `files` takes `status` (`queued`, `running`, `done`, `skipped`, `failed`; repeat it or separate with commas),
   `kind` (`image`, `video`), `limit` (1–1000, default 100) and `offset`.
+- `scan` answers `202 {"bucket": "content", "queued": true}` and scans in the background; the next timed scan follows
+  one full `interval` later. Requests during a running scan lead to one more scan after it. A client that uploads
+  files, such as a content sync, calls it afterwards, so the `interval` can stay long.
 - The key in `files/{key}` is the original's full key, URL-encoded per segment:
   `/api/buckets/content/files/aktion/2026-10-rstorc/Foto%201.JPG`.
 - The overview shows the saved storage, counters per status, both workers, one card per bucket, and two tables with

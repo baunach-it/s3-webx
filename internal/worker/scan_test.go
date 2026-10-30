@@ -220,6 +220,84 @@ func TestScanWithVideoDisabledQueuesNoVideos(t *testing.T) {
 	}
 }
 
+func TestRunScansAgainWhenWoken(t *testing.T) {
+	gate := make(chan chan struct{})
+	b := bucketConfig("content")
+	b.Interval = time.Hour
+	scanner := &Scanner{
+		Target: Target{Config: b, Store: newStoreDouble().givenListGate(gate)},
+		State:  openState(t),
+		Logger: logger,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		scanner.Run(runCtx)
+		close(done)
+	}()
+	nextScan := func(what string) chan struct{} {
+		t.Helper()
+		select {
+		case release := <-gate:
+			return release
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no %s", what)
+			return nil
+		}
+	}
+
+	close(nextScan("initial scan"))
+	scanner.Wake()
+	release := nextScan("scan after wake")
+	scanner.Wake()
+	scanner.Wake()
+	scanner.Wake()
+	close(release)
+	close(nextScan("follow-up scan for the wakes during the scan"))
+	select {
+	case extra := <-gate:
+		close(extra)
+		t.Fatal("wakes during one scan led to more than one follow-up scan")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+func TestWakeBeforeRunIsKept(t *testing.T) {
+	gate := make(chan chan struct{})
+	b := bucketConfig("content")
+	b.Interval = time.Hour
+	scanner := &Scanner{
+		Target: Target{Config: b, Store: newStoreDouble().givenListGate(gate)},
+		State:  openState(t),
+		Logger: logger,
+	}
+	scanner.Wake()
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		scanner.Run(runCtx)
+		close(done)
+	}()
+
+	for _, what := range []string{"initial scan", "scan for the early wake"} {
+		select {
+		case release := <-gate:
+			close(release)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no %s", what)
+		}
+	}
+	cancel()
+	<-done
+}
+
 func TestLastScanRecordsResultButNotShutdown(t *testing.T) {
 	db := openState(t)
 	s := newStoreDouble()

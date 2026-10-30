@@ -24,6 +24,7 @@ type storeDouble struct {
 	uploads      []upload
 	cacheLookups []string
 	listFailure  error
+	listGate     chan chan struct{}
 }
 
 func newStoreDouble() *storeDouble {
@@ -45,7 +46,22 @@ func (s *storeDouble) givenListFailure(err error) *storeDouble {
 	return s
 }
 
-func (s *storeDouble) List(context.Context) ([]store.Object, error) {
+// givenListGate hands every List call to the gate and holds it until the test closes the handed channel.
+func (s *storeDouble) givenListGate(gate chan chan struct{}) *storeDouble {
+	s.listGate = gate
+	return s
+}
+
+func (s *storeDouble) List(ctx context.Context) ([]store.Object, error) {
+	if s.listGate != nil {
+		release := make(chan struct{})
+		select {
+		case s.listGate <- release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		<-release
+	}
 	return s.objects, s.listFailure
 }
 

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,8 +29,9 @@ var (
 )
 
 type activityDouble struct {
-	current map[state.Kind]worker.Progress
-	scans   map[string]worker.ScanResult
+	current        map[state.Kind]worker.Progress
+	scans          map[string]worker.ScanResult
+	scansRequested []string
 }
 
 func newActivityDouble() *activityDouble {
@@ -57,6 +59,11 @@ func (a *activityDouble) Current(kind state.Kind) (worker.Progress, bool) {
 func (a *activityDouble) LastScan(bucket string) (worker.ScanResult, bool) {
 	r, ok := a.scans[bucket]
 	return r, ok
+}
+
+func (a *activityDouble) Scan(bucket string) bool {
+	a.scansRequested = append(a.scansRequested, bucket)
+	return true
 }
 
 type fixture struct {
@@ -125,7 +132,24 @@ func get(
 	header map[string]string,
 ) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodGet, target, nil)
+	return send(
+		t,
+		h,
+		http.MethodGet,
+		target,
+		header,
+	)
+}
+
+func send(
+	t *testing.T,
+	h http.Handler,
+	method string,
+	target string,
+	header map[string]string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, target, nil)
 	for k, v := range header {
 		r.Header.Set(k, v)
 	}
@@ -219,11 +243,28 @@ func TestAPIBearerAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFixture(t)
 			f.auth.APIToken = tt.token
-			for _, target := range []string{"/api/status", "/api/buckets/content/files", "/api/unknown"} {
-				w := get(t, f.handler(), target, tt.header)
+			routes := []struct {
+				method string
+				target string
+				ok     int
+			}{
+				{http.MethodGet, "/api/status", http.StatusOK},
+				{http.MethodGet, "/api/buckets/content/files", http.StatusOK},
+				{http.MethodPost, "/api/buckets/content/scan", http.StatusAccepted},
+				{http.MethodGet, "/api/unknown", http.StatusNotFound},
+			}
+			for _, route := range routes {
+				target := route.method + " " + route.target
+				w := send(
+					t,
+					f.handler(),
+					route.method,
+					route.target,
+					tt.header,
+				)
 				want := tt.want
-				if target == "/api/unknown" && want == http.StatusOK {
-					want = http.StatusNotFound
+				if want == http.StatusOK {
+					want = route.ok
 				}
 				if w.Code != want {
 					t.Errorf("%s: status %d, want %d", target, w.Code, want)
@@ -378,6 +419,48 @@ func TestUnknownBucket(t *testing.T) {
 		if w.Code != http.StatusNotFound || decode[map[string]string](t, w)["error"] != "unknown bucket" {
 			t.Errorf("%s: status %d %s", target, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestScanRequest(t *testing.T) {
+	f := newFixture(t)
+
+	w := send(
+		t,
+		f.handler(),
+		http.MethodPost,
+		"/api/buckets/content/scan",
+		bearer("token-123"),
+	)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status %d %s", w.Code, w.Body.String())
+	}
+	body := decode[map[string]any](t, w)
+	if body["bucket"] != "content" || body["queued"] != true {
+		t.Errorf("body: %v", body)
+	}
+	if !slices.Equal(f.activity.scansRequested, []string{"content"}) {
+		t.Errorf("scans requested: %v", f.activity.scansRequested)
+	}
+}
+
+func TestScanRequestForUnknownBucket(t *testing.T) {
+	f := newFixture(t)
+
+	w := send(
+		t,
+		f.handler(),
+		http.MethodPost,
+		"/api/buckets/removed/scan",
+		bearer("token-123"),
+	)
+
+	if w.Code != http.StatusNotFound || decode[map[string]string](t, w)["error"] != "unknown bucket" {
+		t.Errorf("status %d %s", w.Code, w.Body.String())
+	}
+	if len(f.activity.scansRequested) != 0 {
+		t.Errorf("scans requested: %v", f.activity.scansRequested)
 	}
 }
 

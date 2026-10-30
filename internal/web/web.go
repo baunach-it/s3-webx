@@ -36,6 +36,8 @@ var (
 type Activity interface {
 	Current(kind state.Kind) (worker.Progress, bool)
 	LastScan(bucket string) (worker.ScanResult, bool)
+	// Scan requests a scan of the bucket and reports false if no scanner serves it.
+	Scan(bucket string) bool
 }
 
 type Handler struct {
@@ -68,6 +70,7 @@ func New(
 	h.mux.HandleFunc("GET /api/status", h.bearer(h.apiStatus))
 	h.mux.HandleFunc("GET /api/buckets/{name}/files", h.bearer(h.apiFiles))
 	h.mux.HandleFunc("GET /api/buckets/{name}/files/{key...}", h.bearer(h.apiFile))
+	h.mux.HandleFunc("POST /api/buckets/{name}/scan", h.bearer(h.apiScan))
 	// Unknown API paths answer only after the token check, so probing reveals nothing.
 	h.mux.HandleFunc("/api/", h.bearer(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -334,6 +337,21 @@ func (h *Handler) apiFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toFile(e))
+}
+
+type scanRequest struct {
+	Bucket string `json:"bucket"`
+	Queued bool   `json:"queued"`
+}
+
+// The scan runs in the background; a request during a running scan is served by one follow-up scan.
+func (h *Handler) apiScan(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !slices.Contains(h.buckets, name) || !h.activity.Scan(name) {
+		writeError(w, http.StatusNotFound, "unknown bucket")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, scanRequest{Bucket: name, Queued: true})
 }
 
 //go:embed overview.html

@@ -87,6 +87,9 @@ type Scanner struct {
 
 	mu   sync.Mutex
 	last *ScanResult
+
+	wakeOnce sync.Once
+	wake     chan struct{}
 }
 
 type ScanResult struct {
@@ -103,15 +106,34 @@ func (s *Scanner) LastScan() (ScanResult, bool) {
 	return *s.last, true
 }
 
+// Wake asks Run for a scan now. Requests made while a scan runs collapse into one follow-up scan.
+func (s *Scanner) Wake() {
+	select {
+	case s.wakeChannel() <- struct{}{}:
+	default:
+	}
+}
+
+// Created on first use, so a Scanner built as a struct literal does not drop wake-ups on a nil channel.
+func (s *Scanner) wakeChannel() chan struct{} {
+	s.wakeOnce.Do(func() { s.wake = make(chan struct{}, 1) })
+	return s.wake
+}
+
 func (s *Scanner) Run(ctx context.Context) {
-	ticker := time.NewTicker(s.Target.Config.Interval)
+	interval := s.Target.Config.Interval
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	wake := s.wakeChannel()
 	for {
 		s.scanAndLog(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-wake:
+			// The requested scan starts a new period, so a timed scan does not follow right after it.
+			ticker.Reset(interval)
 		}
 	}
 }

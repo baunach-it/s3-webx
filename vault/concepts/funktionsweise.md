@@ -31,7 +31,7 @@ Temp-Datei, weil ein Double dafuer mehr Code waere als die Abfragen selbst.
 ## Ablauf
 
 ```
-Scanner je Bucket (alle `interval`)            Arbeiter image / video (je einer, sequentiell)
+Scanner je Bucket (alle `interval` + Anstoss) Arbeiter image / video (je einer, sequentiell)
   List ──▶ KindOf ──▶ Decide ──▶ Enqueue ──▶ Wake ──▶ Claim (aelteste zuerst, alle Buckets)
                                                     ──▶ Download nach /data/tmp/job-*/source.<ext>
                                                     ──▶ vips | ffmpeg ──▶ variant.webp | variant.webm
@@ -44,6 +44,13 @@ Scanner je Bucket (alle `interval`)            Arbeiter image / video (je einer,
   werden muss; Kandidaten traegt der Scanner als `queued` in `state.db` ein und weckt den passenden Arbeiter. Ein
   Original ohne Eintrag, dessen Variante schon aktuell im Bucket liegt, uebernimmt der Scanner als `done` (siehe
   Zustandsmodell, „Uebernahme").
+- **Anstoss:** `POST /api/buckets/{name}/scan` ruft `worker.Scanner.Wake()`. Das legt ein Signal in einen Kanal mit
+  Puffer 1, ohne zu blockieren; die Schleife wartet mit `select` auf Kontextende, Ticker und diesen Kanal. Ein
+  angestossener Scan setzt den Ticker mit `Reset(interval)` zurueck, der naechste Takt-Scan folgt also ein volles
+  Intervall spaeter. Anstoesse waehrend eines laufenden Scans fallen zu genau einem Folgescan zusammen. Der Kanal
+  entsteht beim ersten Gebrauch (`sync.Once`), damit ein als Struct-Literal gebauter Scanner keine Anstoesse an einem
+  `nil`-Kanal verliert. Gedacht ist der Anstoss fuer das Backend nach dem Content-Sync; das Intervall ergaenzt ihn
+  nur noch und kann deshalb lang sein (Beispiel `interval: 1h`).
 - **Arbeiter:** Es gibt genau zwei, `image` und `video`, unabhaengig von der Zahl der Buckets. Jeder nimmt seine Art
   nacheinander ueber alle Buckets ab, und zwar den am laengsten wartenden Eintrag zuerst (`queued_at`, bei Gleichstand
   das aeltere Original). Ein langes Video haelt so keine Bilder auf. Ohne Arbeit wartet ein Arbeiter, bis ein Scanner
@@ -221,6 +228,7 @@ Arbeiter wartet. Zeitgrenzen: `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `Writ
 | `GET /api/status` | Bearer | je Arbeiter laufende Datei oder `idle`, je Bucket Zaehler, letzter Scan, Bytes |
 | `GET /api/buckets/{name}/files` | Bearer | Eintraege eines Buckets, Filter `status`, `kind`, `limit`, `offset`, mit `total` |
 | `GET /api/buckets/{name}/files/{key...}` | Bearer | eine Datei mit `variantKey` und `variantAvailable` |
+| `POST /api/buckets/{name}/scan` | Bearer | stoesst einen Scan an, `202 {"bucket": …, "queued": true}`, unbekannter Bucket `404 unknown bucket` |
 | jeder andere Pfad unter `/api/` | Bearer | `404` als JSON |
 
 - **Zugang:** Benutzer, Passwort und Token werden ueber `crypto/subtle.ConstantTimeCompare` verglichen, vorher beide
@@ -230,7 +238,7 @@ Arbeiter wartet. Zeitgrenzen: `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `Writ
 - **Protokoll:** kein Eintrag je Anfrage, nur Fehler (Datenbank, Template, `http.Server.ErrorLog`). Secrets und der
   `Authorization`-Header landen nie im Log.
 - **Arbeiterstand:** Die Schicht kennt Arbeiter und Scanner nur ueber die Schnittstelle `web.Activity`
-  (`Current(kind)`, `LastScan(bucket)`). `main.go` setzt sie mit den echten `worker.Worker` und `worker.Scanner`
+  (`Current(kind)`, `LastScan(bucket)`, `Scan(bucket)`). `main.go` setzt sie mit den echten `worker.Worker` und `worker.Scanner`
   um; im Test steht dort ein handgeschriebenes Double.
 - **Letzter Scan:** `worker.Scanner.LastScan()` haelt Zeitpunkt und Fehler des letzten beendeten Scans, auch eines
   fehlgeschlagenen. Ein Scan, den der Shutdown abbricht, wird nicht festgehalten. Der Wert lebt nur im Speicher; nach
@@ -388,6 +396,8 @@ Content-Buckets selbst blieben unberuehrt. Der Bucket `s3-webx-test` mit den Erg
 | Feldname Variantengroesse | `variantSize` | passt zu `variantKey`; bei `skipped` die gemessene, nicht hochgeladene Groesse |
 | Laenge beim Vergleich | SHA-256 vor `ConstantTimeCompare` | sonst verraet die Laufzeit die Laenge des Secrets |
 | Unbekannte Pfade unter `/api/` | erst Token, dann `404` | ohne Token laesst sich die API nicht abtasten |
+| Antwort auf `scan` | `202` mit JSON-Koerper statt leerem `204` | der Client des Backends erwartet einen Koerper; der Scan laeuft im Hintergrund |
+| Anstoss waehrend eines Scans | genau ein Folgescan, weitere verworfen | der Folgescan sieht alle Uploads bis zu seinem Start; mehr Scans bringen nichts |
 | Port binden | vor Scannern und Arbeitern | belegter Port beendet den Start, statt halb zu laufen |
 | Kopfzeilen der Uebersicht | CSP ohne Skripte, `no-store`, `nosniff`, `no-referrer` | Seite enthaelt Schluessel aus fremden Buckets |
 | `app.css` im Repo | nicht committet (`.gitignore`), erzeugt von `./dev` und Dockerfile | kein generierter Diff im Review; das Image baut sie immer frisch, also kann keine veraltete Datei ausgeliefert werden |
